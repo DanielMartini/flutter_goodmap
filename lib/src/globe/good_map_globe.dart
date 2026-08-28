@@ -20,7 +20,6 @@ class GoodMapGlobe extends StatefulWidget {
     required this.initialCenter,
     this.initialZoom = 1.0,
     this.minZoom = 0.0,
-    this.resetToken = 0,
     this.markers = const [],
     @Deprecated('Use markers instead') this.points = const [],
     this.popups = const [],
@@ -55,10 +54,6 @@ class GoodMapGlobe extends StatefulWidget {
   ///
   /// Must be between 0 and 6. Defaults to 0 to preserve the full zoom range.
   final double minZoom;
-
-  /// Changes to this value reset the camera to the initial globe position.
-  /// The widget remains mounted so loaded globe resources can be reused.
-  final int resetToken;
 
   /// Custom markers (widgets, assets, or fallback dots) plotted on the map and globe.
   final List<MarkerOptions> markers;
@@ -127,17 +122,6 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
   late double _globeStartZoom = widget.initialZoom;
   bool _flat = false;
 
-  @override
-  void didUpdateWidget(GoodMapGlobe oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.resetToken != widget.resetToken) {
-      _center = widget.initialCenter;
-      _globeStartZoom = widget.initialZoom;
-      _flat = false;
-      widget.onSurfaceChanged?.call(false);
-    }
-  }
-
   void _setFlat(bool flat) {
     if (_flat == flat) return;
     setState(() => _flat = flat);
@@ -170,7 +154,6 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
               initialCenter: _center,
               initialZoom: _globeStartZoom,
               minZoom: widget.minZoom,
-              resetToken: widget.resetToken,
               markers: widget.markers,
               points: widget.points,
               popups: widget.popups,
