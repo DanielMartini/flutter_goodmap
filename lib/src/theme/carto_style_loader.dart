@@ -24,6 +24,7 @@ class CartoStyleLoader {
     Brightness brightness,
     GoodBasemapConfig config, {
     String? languageCode,
+    String? waterColor,
   }) {
     final apiKey = config.validatedApiKey();
     final styleUrl =
@@ -35,10 +36,11 @@ class CartoStyleLoader {
       styleUrl,
       cartoApiKeyFingerprint(apiKey),
       languageCode ?? '',
+      waterColor ?? '',
     ].join('|');
     return _cache.putIfAbsent(
       cacheKey,
-      () => _loadAndRewrite(styleUrl, apiKey, languageCode),
+      () => _loadAndRewrite(styleUrl, apiKey, languageCode, waterColor),
     );
   }
 
@@ -46,6 +48,7 @@ class CartoStyleLoader {
     String styleUrl,
     String apiKey,
     String? languageCode,
+    String? waterColor,
   ) async {
     final style = await _fetchJson(Uri.parse(styleUrl), apiKey);
     final sources = style['sources'];
@@ -98,7 +101,21 @@ class CartoStyleLoader {
     if (languageCode != null && languageCode.isNotEmpty) {
       _localizeLabels(style, languageCode);
     }
+    if (waterColor != null && waterColor.isNotEmpty) {
+      _setWaterColor(style, waterColor);
+    }
     return jsonEncode(style);
+  }
+
+  void _setWaterColor(Map<String, dynamic> style, String waterColor) {
+    final layers = style['layers'];
+    if (layers is! List) return;
+
+    for (final layerValue in layers) {
+      if (layerValue is! Map || layerValue['id'] != 'water') continue;
+      final paintValue = layerValue['paint'];
+      if (paintValue is Map) paintValue['fill-color'] = waterColor;
+    }
   }
 
   void _localizeLabels(Map<String, dynamic> style, String languageCode) {

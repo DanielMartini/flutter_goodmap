@@ -44,6 +44,7 @@ class GoodMapGlobe extends StatefulWidget {
     this.sunPosition,
     this.timeRange,
     this.locale,
+    this.waterColor,
     this.basemapConfig,
     this.onBasemapError,
     super.key,
@@ -131,6 +132,11 @@ class GoodMapGlobe extends StatefulWidget {
   /// Locale used for labels when the flat map surface is active.
   /// Defaults to the nearest [Localizations] locale.
   final Locale? locale;
+
+  /// Water colour used by the flat map. By default it matches the CARTO raster
+  /// ocean colour used by the globe for the active theme.
+  final Color? waterColor;
+
   final GoodBasemapConfig? basemapConfig;
   final void Function(Object error)? onBasemapError;
 
@@ -226,6 +232,9 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
                       markers: widget.markers,
                       popups: widget.popups,
                       locale: widget.locale,
+                      waterColor:
+                          widget.waterColor ??
+                          _cartoGlobeWaterColor(Theme.of(context).brightness),
                       basemapConfig: widget.basemapConfig,
                       onBasemapError: widget.onBasemapError,
                       onCameraChanged: (pos) {
@@ -242,3 +251,8 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
     );
   }
 }
+
+Color _cartoGlobeWaterColor(Brightness brightness) =>
+    brightness == Brightness.dark
+        ? const Color(0xff262626)
+        : const Color(0xffd4dadc);

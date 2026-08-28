@@ -35,6 +35,7 @@ class GoodMap extends StatefulWidget {
     this.markers = const [],
     this.popups = const [],
     this.locale,
+    this.waterColor,
     this.basemapConfig,
     this.onBasemapError,
     @visibleForTesting this.mapBuilder = _defaultMapBuilder,
@@ -54,6 +55,10 @@ class GoodMap extends StatefulWidget {
   /// Defaults to the nearest [Localizations] locale. Labels fall back to their
   /// native name and then English when the requested translation is missing.
   final Locale? locale;
+
+  /// Optional fill colour applied to the CARTO water layer.
+  final Color? waterColor;
+
   final GoodBasemapConfig? basemapConfig;
   final void Function(Object error)? onBasemapError;
 
@@ -142,7 +147,8 @@ class _GoodMapState extends State<GoodMap> {
   void didUpdateWidget(GoodMap oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.basemapConfig != widget.basemapConfig ||
-        oldWidget.locale != widget.locale) {
+        oldWidget.locale != widget.locale ||
+        oldWidget.waterColor != widget.waterColor) {
       _ensureStyleFuture(Theme.of(context).brightness, force: true);
     }
     if (_controller != null && _readyCalled) {
@@ -162,33 +168,37 @@ class _GoodMapState extends State<GoodMap> {
   }
 
   void _ensureStyleFuture(Brightness brightness, {bool force = false}) {
-    final config = widget.basemapConfig;
-    if (config == null) {
+    if (!_requiresStyleRewrite) {
       _styleFuture = null;
       _styleLoadKey = null;
       return;
     }
+    final config = widget.basemapConfig ?? const GoodBasemapConfig();
     final locale = widget.locale ?? Localizations.localeOf(context);
     final languageCode = _mapLabelLanguage(locale);
+    final waterColor =
+        widget.waterColor == null ? null : _mapStyleColor(widget.waterColor!);
     final key =
         '${brightness.name}|${config.lightStyleUrl}|'
         '${config.darkStyleUrl}|${cartoApiKeyFingerprint(config.cartoApiKey ?? '')}|'
-        '${config.requireApiKey}|$languageCode';
+        '${config.requireApiKey}|$languageCode|${waterColor ?? ''}';
     if (!force && key == _styleLoadKey) return;
     _styleLoadKey = key;
-    _styleFuture = _loadStyle(brightness, config, languageCode);
+    _styleFuture = _loadStyle(brightness, config, languageCode, waterColor);
   }
 
   Future<String> _loadStyle(
     Brightness brightness,
     GoodBasemapConfig config,
     String languageCode,
+    String? waterColor,
   ) async {
     try {
       return await _styleLoader.load(
         brightness,
         config,
         languageCode: languageCode,
+        waterColor: waterColor,
       );
     } catch (error) {
       if (mounted) widget.onBasemapError?.call(error);
@@ -240,7 +250,7 @@ class _GoodMapState extends State<GoodMap> {
   @override
   Widget build(BuildContext context) {
     final brightness = Theme.of(context).brightness;
-    if (widget.basemapConfig == null) {
+    if (!_requiresStyleRewrite) {
       return _buildMap(context, basemapStyleFor(brightness));
     }
     final future = _styleFuture;
@@ -256,6 +266,11 @@ class _GoodMapState extends State<GoodMap> {
       },
     );
   }
+
+  bool get _requiresStyleRewrite =>
+      widget.basemapConfig != null ||
+      widget.locale != null ||
+      widget.waterColor != null;
 }
 
 String _mapLabelLanguage(Locale locale) {
@@ -264,6 +279,16 @@ String _mapLabelLanguage(Locale locale) {
     return 'sr-Latn';
   }
   return locale.languageCode.toLowerCase();
+}
+
+String _mapStyleColor(Color color) {
+  final argb = color.toARGB32();
+  final red = (argb >> 16) & 0xff;
+  final green = (argb >> 8) & 0xff;
+  final blue = argb & 0xff;
+  return '#${red.toRadixString(16).padLeft(2, '0')}'
+      '${green.toRadixString(16).padLeft(2, '0')}'
+      '${blue.toRadixString(16).padLeft(2, '0')}';
 }
 
 Widget _defaultMapBuilder({
