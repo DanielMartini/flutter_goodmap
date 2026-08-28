@@ -23,6 +23,8 @@ export 'src/globe/good_globe.dart' show GoodGlobe;
 export 'src/globe/good_map_globe.dart' show GoodMapGlobe;
 export 'src/good_map.dart' show GoodMap;
 export 'src/theme/basemaps.dart' show Basemaps;
+export 'src/theme/carto_basemap_config.dart'
+    show GoodBasemapConfig, GoodBasemapConfigurationException;
 export 'src/theme/good_map_theme.dart' show GoodMapTheme;
 
 // Re-export the geographic primitives users need so they don't have to add a

@@ -1,11 +1,14 @@
 // lib/src/good_map.dart
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import 'controls/controls.dart';
 import 'good_map_controller.dart';
 import 'popups/popup_layer.dart';
 import 'theme/basemaps.dart';
+import 'theme/carto_basemap_config.dart';
+import 'theme/carto_style_loader.dart';
 import 'theme/good_map_theme.dart';
 
 export 'controls/controls.dart' show GoodControls;
@@ -31,6 +34,8 @@ class GoodMap extends StatefulWidget {
     this.theme,
     this.markers = const [],
     this.popups = const [],
+    this.basemapConfig,
+    this.onBasemapError,
     @visibleForTesting this.mapBuilder = _defaultMapBuilder,
     super.key,
   });
@@ -42,6 +47,8 @@ class GoodMap extends StatefulWidget {
   final void Function(GoodMapController)? onMapReady;
   final List<MarkerOptions> markers;
   final List<PopupOptions> popups;
+  final GoodBasemapConfig? basemapConfig;
+  final void Function(Object error)? onBasemapError;
 
   /// Called on camera moves with the current position (target + zoom).
   final void Function(CameraPosition)? onCameraChanged;
@@ -56,6 +63,12 @@ class _GoodMapState extends State<GoodMap> {
   GoodMapController? _controller;
   int _cameraVersion = 0;
   bool _readyCalled = false;
+  final http.Client _basemapClient = http.Client();
+  late final CartoStyleLoader _styleLoader = CartoStyleLoader(
+    client: _basemapClient,
+  );
+  Future<String>? _styleFuture;
+  String? _styleLoadKey;
 
   final Set<MarkerId> _declarativeMarkerIds = {};
   final Set<PopupId> _declarativePopupIds = {};
@@ -121,6 +134,9 @@ class _GoodMapState extends State<GoodMap> {
   @override
   void didUpdateWidget(GoodMap oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.basemapConfig != widget.basemapConfig) {
+      _ensureStyleFuture(Theme.of(context).brightness, force: true);
+    }
     if (_controller != null && _readyCalled) {
       if (oldWidget.markers != widget.markers) {
         _syncMarkers();
@@ -132,17 +148,50 @@ class _GoodMapState extends State<GoodMap> {
   }
 
   @override
-  void dispose() {
-    _controller?.removeListener(_onOverlayChanged);
-    _controller?.dispose();
-    super.dispose();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _ensureStyleFuture(Theme.of(context).brightness);
+  }
+
+  void _ensureStyleFuture(Brightness brightness, {bool force = false}) {
+    final config = widget.basemapConfig;
+    if (config == null) {
+      _styleFuture = null;
+      _styleLoadKey = null;
+      return;
+    }
+    final key =
+        '${brightness.name}|${config.lightStyleUrl}|'
+        '${config.darkStyleUrl}|${cartoApiKeyFingerprint(config.cartoApiKey ?? '')}|'
+        '${config.requireApiKey}';
+    if (!force && key == _styleLoadKey) return;
+    _styleLoadKey = key;
+    _styleFuture = _loadStyle(brightness, config);
+  }
+
+  Future<String> _loadStyle(
+    Brightness brightness,
+    GoodBasemapConfig config,
+  ) async {
+    try {
+      return await _styleLoader.load(brightness, config);
+    } catch (error) {
+      if (mounted) widget.onBasemapError?.call(error);
+      rethrow;
+    }
   }
 
   @override
-  Widget build(BuildContext context) {
+  void dispose() {
+    _controller?.removeListener(_onOverlayChanged);
+    _controller?.dispose();
+    _basemapClient.close();
+    super.dispose();
+  }
+
+  Widget _buildMap(BuildContext context, String style) {
     final scheme = Theme.of(context).colorScheme;
     final theme = widget.theme ?? GoodMapTheme.fromColorScheme(scheme);
-    final style = basemapStyleFor(Theme.of(context).brightness);
 
     return Stack(
       fit: StackFit.expand,
@@ -170,6 +219,26 @@ class _GoodMapState extends State<GoodMap> {
             theme: theme,
           ),
       ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final brightness = Theme.of(context).brightness;
+    if (widget.basemapConfig == null) {
+      return _buildMap(context, basemapStyleFor(brightness));
+    }
+    final future = _styleFuture;
+    if (future == null) {
+      return ColoredBox(color: Theme.of(context).colorScheme.surface);
+    }
+    return FutureBuilder<String>(
+      future: future,
+      builder: (context, snapshot) {
+        final style = snapshot.data;
+        if (style != null) return _buildMap(context, style);
+        return ColoredBox(color: Theme.of(context).colorScheme.surface);
+      },
     );
   }
 }

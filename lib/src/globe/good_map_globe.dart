@@ -5,6 +5,7 @@ import '../good_map.dart';
 import '../heatmap/heatmap.dart';
 import '../markers/marker.dart';
 import '../popups/popup.dart';
+import '../theme/carto_basemap_config.dart';
 import 'globe_overlays.dart';
 import 'good_globe.dart';
 
@@ -38,6 +39,8 @@ class GoodMapGlobe extends StatefulWidget {
     this.dateTime,
     this.sunPosition,
     this.timeRange,
+    this.basemapConfig,
+    this.onBasemapError,
     super.key,
   });
 
@@ -101,6 +104,8 @@ class GoodMapGlobe extends StatefulWidget {
 
   /// Time range `(start, end)` to filter markers and arcs on the globe.
   final (double, double)? timeRange;
+  final GoodBasemapConfig? basemapConfig;
+  final void Function(Object error)? onBasemapError;
 
   @override
   State<GoodMapGlobe> createState() => _GoodMapGlobeState();
@@ -128,6 +133,8 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
               controls: widget.controls,
               markers: widget.markers,
               popups: widget.popups,
+              basemapConfig: widget.basemapConfig,
+              onBasemapError: widget.onBasemapError,
               onCameraChanged: (pos) {
                 _center = pos.target;
                 if (pos.zoom < widget.flatZoomToGlobe) {
@@ -153,6 +160,8 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
               dateTime: widget.dateTime,
               sunPosition: widget.sunPosition,
               timeRange: widget.timeRange,
+              basemapConfig: widget.basemapConfig,
+              onBasemapError: widget.onBasemapError,
               onCameraChanged: (center, zoom) {
                 _center = center;
                 if (zoom >= widget.globeZoomToFlat) _setFlat(true);

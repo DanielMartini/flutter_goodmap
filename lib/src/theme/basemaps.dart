@@ -1,6 +1,8 @@
 // lib/src/theme/basemaps.dart
 import 'package:flutter/material.dart' show Brightness;
 
+import 'carto_basemap_config.dart';
+
 /// CARTO public vector basemap style URLs (free for dev/demo use; see README).
 abstract final class Basemaps {
   static const String positron =
@@ -12,3 +14,8 @@ abstract final class Basemaps {
 /// Selects the basemap style URL matching the host app's [brightness].
 String basemapStyleFor(Brightness brightness) =>
     brightness == Brightness.dark ? Basemaps.darkMatter : Basemaps.positron;
+
+String configuredBasemapStyleFor(
+  Brightness brightness,
+  GoodBasemapConfig config,
+) => brightness == Brightness.dark ? config.darkStyleUrl : config.lightStyleUrl;

@@ -7,6 +7,9 @@ import 'package:http/http.dart' as http;
 import 'package:maplibre_gl/maplibre_gl.dart' show LatLng;
 
 import 'mercator.dart';
+import '../theme/carto_basemap_config.dart';
+
+typedef CartoTileUriBuilder = Uri Function(Uri uri);
 
 /// Builds a single equirectangular [ui.Image] atlas for the globe by fetching
 /// CARTO raster tiles and reprojecting them from Web-Mercator to equirectangular
@@ -21,15 +24,23 @@ class TileAtlas {
     this.tileZoom = 4,
     this.width = 2048,
     this.height = 1024,
-  });
+    this.basemapConfig,
+    http.Client? client,
+    CartoTileUriBuilder? uriBuilder,
+  }) : _client = client ?? http.Client(),
+       _ownsClient = client == null,
+       _uriBuilder = uriBuilder;
 
   final Brightness brightness;
   final int tileZoom;
   final int width;
   final int height;
+  final GoodBasemapConfig? basemapConfig;
 
   static const int _tileSize = 256;
-  final http.Client _client = http.Client();
+  final http.Client _client;
+  final bool _ownsClient;
+  final CartoTileUriBuilder? _uriBuilder;
   bool _disposed = false;
 
   /// Fetches tiles, reprojects, and returns the equirectangular atlas image.
@@ -72,16 +83,20 @@ class TileAtlas {
       brightness == Brightness.dark ? 'dark_nolabels' : 'light_nolabels';
 
   Future<Uint8List?> _fetchTile(TileId tile) async {
+    final apiKey = basemapConfig?.validatedApiKey() ?? '';
     try {
-      final url =
-          'https://basemaps.cartocdn.com/${_styleName()}/${tile.z}/${tile.x}/${tile.y}.png';
-      final response = await _client.get(Uri.parse(url));
+      final url = Uri.parse(
+        'https://basemaps.cartocdn.com/${_styleName()}/${tile.z}/${tile.x}/${tile.y}.png',
+      );
+      final uri = _uriBuilder?.call(url) ?? cartoUriWithApiKey(url, apiKey);
+      final response = await _client.get(uri);
       if (response.statusCode != 200) return null;
       final bytes = response.bodyBytes;
       final codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
-      final data =
-          await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final data = await frame.image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
       return data?.buffer.asUint8List();
     } catch (_) {
       return null;
@@ -101,13 +116,19 @@ class TileAtlas {
 
   Future<ui.Image> _decode(Uint8List rgba, int w, int h) {
     final completer = Completer<ui.Image>();
-    ui.decodeImageFromPixels(rgba, w, h, ui.PixelFormat.rgba8888, completer.complete);
+    ui.decodeImageFromPixels(
+      rgba,
+      w,
+      h,
+      ui.PixelFormat.rgba8888,
+      completer.complete,
+    );
     return completer.future;
   }
 
   void dispose() {
     _disposed = true;
-    _client.close();
+    if (_ownsClient) _client.close();
   }
 }
 

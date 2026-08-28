@@ -10,6 +10,8 @@ import 'package:maplibre_gl/maplibre_gl.dart' show LatLng;
 
 import 'mercator.dart';
 import 'sphere_projection.dart';
+import '../theme/carto_basemap_config.dart';
+import 'tile_atlas.dart' show CartoTileUriBuilder;
 
 /// Describes the bounds and detail texture of a windowed LOD region.
 class DetailBounds {
@@ -50,7 +52,12 @@ class DetailTileAtlas {
     required this.projection,
     this.width = 1024,
     this.height = 1024,
-  });
+    this.basemapConfig,
+    http.Client? client,
+    CartoTileUriBuilder? uriBuilder,
+  }) : _client = client ?? http.Client(),
+       _ownsClient = client == null,
+       _uriBuilder = uriBuilder;
 
   final Brightness brightness;
   final LatLng center;
@@ -59,15 +66,17 @@ class DetailTileAtlas {
   final SphereProjection projection;
   final int width;
   final int height;
+  final GoodBasemapConfig? basemapConfig;
 
   static const int _tileSize = 256;
-  final http.Client _client = http.Client();
+  final http.Client _client;
+  final bool _ownsClient;
+  final CartoTileUriBuilder? _uriBuilder;
   bool _disposed = false;
-
 
   /// Static helper to calculate the visible bounding box of viewport by grid sampling.
   static ({double minLat, double maxLat, double minLon, double maxLon})
-      calculateVisibleBounds(Size viewportSize, SphereProjection projection) {
+  calculateVisibleBounds(Size viewportSize, SphereProjection projection) {
     final visibleCoords = <LatLng>[];
     const steps = 6;
     for (var i = 0; i <= steps; i++) {
@@ -119,7 +128,10 @@ class DetailTileAtlas {
   /// the detail atlas image and its boundaries. Returns null on failure.
   Future<({ui.Image image, DetailBounds bounds})?> build() async {
     final bounds = calculateVisibleBounds(viewportSize, projection);
-    if (bounds.minLat == 0.0 && bounds.maxLat == 0.0 && bounds.minLon == 0.0 && bounds.maxLon == 0.0) {
+    if (bounds.minLat == 0.0 &&
+        bounds.maxLat == 0.0 &&
+        bounds.minLon == 0.0 &&
+        bounds.maxLon == 0.0) {
       return null;
     }
     final minLat = bounds.minLat;
@@ -233,16 +245,20 @@ class DetailTileAtlas {
       brightness == Brightness.dark ? 'dark_nolabels' : 'light_nolabels';
 
   Future<Uint8List?> _fetchTile(TileId tile) async {
+    final apiKey = basemapConfig?.validatedApiKey() ?? '';
     try {
-      final url =
-          'https://basemaps.cartocdn.com/${_styleName()}/${tile.z}/${tile.x}/${tile.y}.png';
-      final response = await _client.get(Uri.parse(url));
+      final url = Uri.parse(
+        'https://basemaps.cartocdn.com/${_styleName()}/${tile.z}/${tile.x}/${tile.y}.png',
+      );
+      final uri = _uriBuilder?.call(url) ?? cartoUriWithApiKey(url, apiKey);
+      final response = await _client.get(uri);
       if (response.statusCode != 200) return null;
       final bytes = response.bodyBytes;
       final codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
-      final data =
-          await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final data = await frame.image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
       return data?.buffer.asUint8List();
     } catch (_) {
       return null;
@@ -250,7 +266,12 @@ class DetailTileAtlas {
   }
 
   void _blitTile(
-      Uint8List mosaic, int mosaicWidth, int localX, int localY, Uint8List px) {
+    Uint8List mosaic,
+    int mosaicWidth,
+    int localX,
+    int localY,
+    Uint8List px,
+  ) {
     final ox = localX * _tileSize;
     final oy = localY * _tileSize;
     for (var y = 0; y < _tileSize; y++) {
@@ -270,7 +291,7 @@ class DetailTileAtlas {
 
   void dispose() {
     _disposed = true;
-    _client.close();
+    if (_ownsClient) _client.close();
   }
 }
 
@@ -339,8 +360,14 @@ Uint8List _reprojectToEquirectDetail(_ReprojectDetailArgs args) {
         mx += 1.0;
       }
 
-      final sx = ((mx - minMercX) * mosaicWidth).floor().clamp(0, mosaicWidth - 1);
-      final sy = ((mc.y - minMercY) * mosaicHeight).floor().clamp(0, mosaicHeight - 1);
+      final sx = ((mx - minMercX) * mosaicWidth).floor().clamp(
+        0,
+        mosaicWidth - 1,
+      );
+      final sy = ((mc.y - minMercY) * mosaicHeight).floor().clamp(
+        0,
+        mosaicHeight - 1,
+      );
 
       final src = (sy * mosaicWidth + sx) * 4;
       final dst = (ay * width + ax) * 4;

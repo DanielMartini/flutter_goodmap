@@ -9,6 +9,7 @@ import 'package:maplibre_gl/maplibre_gl.dart' show LatLng;
 import '../heatmap/heatmap.dart';
 import '../markers/marker.dart';
 import '../popups/popup.dart';
+import '../theme/carto_basemap_config.dart';
 import 'detail_tile_atlas.dart';
 import 'globe_overlays.dart';
 import 'sphere_projection.dart';
@@ -38,6 +39,8 @@ class GoodGlobe extends StatefulWidget {
     this.dateTime,
     this.sunPosition,
     this.timeRange,
+    this.basemapConfig,
+    this.onBasemapError,
     super.key,
     @visibleForTesting this.renderEnabled = true,
   });
@@ -104,6 +107,8 @@ class GoodGlobe extends StatefulWidget {
   /// [MarkerOptions.timestamp] / [GlobeArc.timestamp] fields.
   /// Items without a timestamp are always shown.
   final (double, double)? timeRange;
+  final GoodBasemapConfig? basemapConfig;
+  final void Function(Object error)? onBasemapError;
 
   /// When false (tests), GPU shader/atlas and the inertia ticker are skipped.
   final bool renderEnabled;
@@ -205,6 +210,10 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
   void didUpdateWidget(GoodGlobe oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!widget.renderEnabled) return;
+    if (oldWidget.basemapConfig != widget.basemapConfig &&
+        _brightness != null) {
+      _rebuildAtlas(_brightness!);
+    }
     if (_needsDashAnimation) {
       if (!_dash.isAnimating) _dash.repeat();
     } else {
@@ -230,10 +239,27 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
 
   Future<void> _rebuildAtlas(Brightness brightness) async {
     _atlasBuilder?.dispose();
-    final builder = TileAtlas(brightness: brightness);
+    final builder = TileAtlas(
+      brightness: brightness,
+      basemapConfig: widget.basemapConfig,
+    );
     _atlasBuilder = builder;
-    final img = await builder.build();
-    if (!mounted || img == null) return;
+    ui.Image? img;
+    try {
+      img = await builder.build();
+    } catch (error) {
+      if (mounted && _atlasBuilder == builder) {
+        widget.onBasemapError?.call(error);
+      }
+      return;
+    }
+    if (!mounted || _atlasBuilder != builder) return;
+    if (img == null) {
+      widget.onBasemapError?.call(
+        StateError('Unable to load CARTO globe basemap'),
+      );
+      return;
+    }
     _atlas?.dispose();
     _atlas = img;
     _rebuildShader();
@@ -304,10 +330,19 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
       zoom: _zoom,
       viewportSize: size,
       projection: projection,
+      basemapConfig: widget.basemapConfig,
     );
     _detailBuilder = builder;
 
-    final result = await builder.build();
+    ({ui.Image image, DetailBounds bounds})? result;
+    try {
+      result = await builder.build();
+    } catch (error) {
+      if (mounted && _detailBuilder == builder) {
+        widget.onBasemapError?.call(error);
+      }
+      return;
+    }
     if (!mounted || _detailBuilder != builder || result == null) {
       if (result != null) {
         result.image.dispose();
@@ -315,10 +350,11 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
       return;
     }
 
+    final loaded = result;
     final oldAtlas = _detailAtlas;
     setState(() {
-      _detailAtlas = result.image;
-      _detailBounds = result.bounds;
+      _detailAtlas = loaded.image;
+      _detailBounds = loaded.bounds;
     });
 
     if (oldAtlas != null && oldAtlas != _detailAtlas) {
