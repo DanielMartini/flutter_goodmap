@@ -41,6 +41,7 @@ class GoodMapGlobe extends StatefulWidget {
     this.dateTime,
     this.sunPosition,
     this.timeRange,
+    this.locale,
     this.basemapConfig,
     this.onBasemapError,
     super.key,
@@ -115,6 +116,10 @@ class GoodMapGlobe extends StatefulWidget {
 
   /// Time range `(start, end)` to filter markers and arcs on the globe.
   final (double, double)? timeRange;
+
+  /// Locale used for labels when the flat map surface is active.
+  /// Defaults to the nearest [Localizations] locale.
+  final Locale? locale;
   final GoodBasemapConfig? basemapConfig;
   final void Function(Object error)? onBasemapError;
 
@@ -207,6 +212,7 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
                       controls: widget.controls,
                       markers: widget.markers,
                       popups: widget.popups,
+                      locale: widget.locale,
                       basemapConfig: widget.basemapConfig,
                       onBasemapError: widget.onBasemapError,
                       onCameraChanged: (pos) {

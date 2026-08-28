@@ -34,6 +34,7 @@ class GoodMap extends StatefulWidget {
     this.theme,
     this.markers = const [],
     this.popups = const [],
+    this.locale,
     this.basemapConfig,
     this.onBasemapError,
     @visibleForTesting this.mapBuilder = _defaultMapBuilder,
@@ -47,6 +48,12 @@ class GoodMap extends StatefulWidget {
   final void Function(GoodMapController)? onMapReady;
   final List<MarkerOptions> markers;
   final List<PopupOptions> popups;
+
+  /// Locale used for CARTO vector labels.
+  ///
+  /// Defaults to the nearest [Localizations] locale. Labels fall back to their
+  /// native name and then English when the requested translation is missing.
+  final Locale? locale;
   final GoodBasemapConfig? basemapConfig;
   final void Function(Object error)? onBasemapError;
 
@@ -134,7 +141,8 @@ class _GoodMapState extends State<GoodMap> {
   @override
   void didUpdateWidget(GoodMap oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.basemapConfig != widget.basemapConfig) {
+    if (oldWidget.basemapConfig != widget.basemapConfig ||
+        oldWidget.locale != widget.locale) {
       _ensureStyleFuture(Theme.of(context).brightness, force: true);
     }
     if (_controller != null && _readyCalled) {
@@ -160,21 +168,28 @@ class _GoodMapState extends State<GoodMap> {
       _styleLoadKey = null;
       return;
     }
+    final locale = widget.locale ?? Localizations.localeOf(context);
+    final languageCode = _mapLabelLanguage(locale);
     final key =
         '${brightness.name}|${config.lightStyleUrl}|'
         '${config.darkStyleUrl}|${cartoApiKeyFingerprint(config.cartoApiKey ?? '')}|'
-        '${config.requireApiKey}';
+        '${config.requireApiKey}|$languageCode';
     if (!force && key == _styleLoadKey) return;
     _styleLoadKey = key;
-    _styleFuture = _loadStyle(brightness, config);
+    _styleFuture = _loadStyle(brightness, config, languageCode);
   }
 
   Future<String> _loadStyle(
     Brightness brightness,
     GoodBasemapConfig config,
+    String languageCode,
   ) async {
     try {
-      return await _styleLoader.load(brightness, config);
+      return await _styleLoader.load(
+        brightness,
+        config,
+        languageCode: languageCode,
+      );
     } catch (error) {
       if (mounted) widget.onBasemapError?.call(error);
       rethrow;
@@ -241,6 +256,14 @@ class _GoodMapState extends State<GoodMap> {
       },
     );
   }
+}
+
+String _mapLabelLanguage(Locale locale) {
+  if (locale.languageCode.toLowerCase() == 'sr' &&
+      locale.scriptCode?.toLowerCase() == 'latn') {
+    return 'sr-Latn';
+  }
+  return locale.languageCode.toLowerCase();
 }
 
 Widget _defaultMapBuilder({

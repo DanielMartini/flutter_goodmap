@@ -20,7 +20,11 @@ class CartoStyleLoader {
   final http.Client _client;
   final Map<String, Future<String>> _cache = {};
 
-  Future<String> load(Brightness brightness, GoodBasemapConfig config) {
+  Future<String> load(
+    Brightness brightness,
+    GoodBasemapConfig config, {
+    String? languageCode,
+  }) {
     final apiKey = config.validatedApiKey();
     final styleUrl =
         brightness == Brightness.dark
@@ -30,14 +34,19 @@ class CartoStyleLoader {
       brightness.name,
       styleUrl,
       cartoApiKeyFingerprint(apiKey),
+      languageCode ?? '',
     ].join('|');
     return _cache.putIfAbsent(
       cacheKey,
-      () => _loadAndRewrite(styleUrl, apiKey),
+      () => _loadAndRewrite(styleUrl, apiKey, languageCode),
     );
   }
 
-  Future<String> _loadAndRewrite(String styleUrl, String apiKey) async {
+  Future<String> _loadAndRewrite(
+    String styleUrl,
+    String apiKey,
+    String? languageCode,
+  ) async {
     final style = await _fetchJson(Uri.parse(styleUrl), apiKey);
     final sources = style['sources'];
     if (sources is Map) {
@@ -86,7 +95,42 @@ class CartoStyleLoader {
       final value = style[key];
       if (value is String) style[key] = _rewriteUrl(value, apiKey);
     }
+    if (languageCode != null && languageCode.isNotEmpty) {
+      _localizeLabels(style, languageCode);
+    }
     return jsonEncode(style);
+  }
+
+  void _localizeLabels(Map<String, dynamic> style, String languageCode) {
+    final layers = style['layers'];
+    if (layers is! List) return;
+
+    final localizedName = <dynamic>[
+      'coalesce',
+      <dynamic>['get', 'name:$languageCode'],
+      if (languageCode == 'en') <dynamic>['get', 'name_en'],
+      <dynamic>['get', 'name'],
+      if (languageCode != 'en') <dynamic>['get', 'name_en'],
+    ];
+
+    for (final layerValue in layers) {
+      if (layerValue is! Map || layerValue['type'] != 'symbol') continue;
+      final layoutValue = layerValue['layout'];
+      if (layoutValue is! Map) continue;
+      final textField = layoutValue['text-field'];
+      if (_usesNameField(textField)) {
+        layoutValue['text-field'] = localizedName;
+      }
+    }
+  }
+
+  bool _usesNameField(dynamic value) {
+    if (value is String) {
+      return RegExp(r'\{name(?::[^}]+|_[^}]+)?\}').hasMatch(value);
+    }
+    if (value is List) return value.any(_usesNameField);
+    if (value is Map) return value.values.any(_usesNameField);
+    return false;
   }
 
   Future<Map<String, dynamic>> _fetchJson(Uri uri, String apiKey) async {
