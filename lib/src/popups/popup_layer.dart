@@ -1,4 +1,5 @@
 // lib/src/popups/popup_layer.dart
+import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
@@ -28,12 +29,14 @@ class GoodOverlayLayer extends StatefulWidget {
 
 class _GoodOverlayLayerState extends State<GoodOverlayLayer> {
   Map<Object, Offset> _offsets = <Object, Offset>{};
-  int _reprojectToken = 0;
+  bool _reprojecting = false;
+  bool _reprojectPending = false;
+  int _reprojectGeneration = 0;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _reproject();
+    _scheduleReproject();
   }
 
   @override
@@ -41,29 +44,63 @@ class _GoodOverlayLayerState extends State<GoodOverlayLayer> {
     super.didUpdateWidget(old);
     if (old.cameraVersion != widget.cameraVersion ||
         old.entries != widget.entries) {
-      _reproject();
+      _scheduleReproject();
     }
   }
 
-  Future<void> _reproject() async {
-    final token = ++_reprojectToken;
+  void _scheduleReproject() {
+    _reprojectGeneration++;
+    _reprojectPending = true;
+    if (!_reprojecting) unawaited(_drainReprojections());
+  }
+
+  Future<void> _drainReprojections() async {
+    _reprojecting = true;
+    while (mounted && _reprojectPending) {
+      _reprojectPending = false;
+      await _reprojectOnce(_reprojectGeneration);
+    }
+    _reprojecting = false;
+  }
+
+  Future<void> _reprojectOnce(int generation) async {
     // `toScreenLocation` returns physical pixels on Android but logical points
     // on iOS; `Positioned` is logical, so scale Android down by the DPR.
     final divisor = defaultTargetPlatform == TargetPlatform.android
         ? MediaQuery.of(context).devicePixelRatio
         : 1.0;
     final entries = widget.entries;
-    final next = <Object, Offset>{};
-    for (final e in entries) {
-      try {
-        final Point<num> p = await widget.native.toScreenLocation(e.position);
-        next[e.key] = Offset(p.x.toDouble() / divisor, p.y.toDouble() / divisor);
-      } catch (_) {
-        // Projection can fail transiently mid-gesture; skip this entry.
+    if (entries.isEmpty) {
+      if (mounted && generation == _reprojectGeneration) {
+        setState(() => _offsets = <Object, Offset>{});
       }
+      return;
     }
-    // Drop the result if a newer reprojection started while we awaited.
-    if (!mounted || token != _reprojectToken) return;
+
+    late final List<Point> points;
+    try {
+      points = await widget.native.toScreenLocationBatch(
+        entries.map((entry) => entry.position),
+      );
+    } catch (_) {
+      // Projection can fail transiently mid-gesture. A pending camera update
+      // will retry with the latest position.
+      return;
+    }
+
+    // Drop the result if the camera or entries changed while awaiting the
+    // platform channel. The drain loop will immediately project the latest.
+    if (!mounted || generation != _reprojectGeneration) return;
+
+    final next = <Object, Offset>{};
+    final count = min(entries.length, points.length);
+    for (var index = 0; index < count; index++) {
+      final point = points[index];
+      next[entries[index].key] = Offset(
+        point.x.toDouble() / divisor,
+        point.y.toDouble() / divisor,
+      );
+    }
     setState(() => _offsets = next);
   }
 
