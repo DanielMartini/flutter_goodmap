@@ -43,6 +43,7 @@ class GoodGlobe extends StatefulWidget {
     this.timeRange,
     this.basemapConfig,
     this.onBasemapError,
+    this.onCameraResetEnd,
     super.key,
     @visibleForTesting this.renderEnabled = true,
   }) : assert(minZoom >= 0.0 && minZoom <= 6.0);
@@ -120,6 +121,9 @@ class GoodGlobe extends StatefulWidget {
   final (double, double)? timeRange;
   final GoodBasemapConfig? basemapConfig;
   final void Function(Object error)? onBasemapError;
+
+  /// Called when a reset animation finishes or is interrupted by a gesture.
+  final VoidCallback? onCameraResetEnd;
 
   /// When false (tests), GPU shader/atlas and the inertia ticker are skipped.
   final bool renderEnabled;
@@ -403,7 +407,8 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
     _resetStartZoom = _zoom;
     _resetEndRotationX = widget.initialCenter.latitude * math.pi / 180.0;
     final targetRotationZ = widget.initialCenter.longitude * math.pi / 180.0;
-    final rotationDelta = (targetRotationZ - _rotationZ + math.pi) % (2 * math.pi) - math.pi;
+    final rotationDelta =
+        (targetRotationZ - _rotationZ + math.pi) % (2 * math.pi) - math.pi;
     _resetEndRotationZ = _rotationZ + rotationDelta;
     _resetEndZoom = math.max(widget.initialZoom, widget.minZoom).toDouble();
     _cameraReset.forward(from: 0);
@@ -413,16 +418,26 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
     if (_cameraReset.value == 0) return;
     final t = Curves.easeInOut.transform(_cameraReset.value);
     setState(() {
-      _rotationX = _resetStartRotationX + (_resetEndRotationX - _resetStartRotationX) * t;
-      _rotationZ = _resetStartRotationZ + (_resetEndRotationZ - _resetStartRotationZ) * t;
+      _rotationX =
+          _resetStartRotationX +
+          (_resetEndRotationX - _resetStartRotationX) * t;
+      _rotationZ =
+          _resetStartRotationZ +
+          (_resetEndRotationZ - _resetStartRotationZ) * t;
       _zoom = _resetStartZoom + (_resetEndZoom - _resetStartZoom) * t;
     });
     widget.onCameraChanged?.call(_center, _zoom);
-    if (_cameraReset.isCompleted) _scheduleLodDetails();
+    if (_cameraReset.isCompleted) {
+      _scheduleLodDetails();
+      widget.onCameraResetEnd?.call();
+    }
   }
 
   void _onScaleStart(ScaleStartDetails d) {
-    if (_cameraReset.isAnimating) _cameraReset.stop();
+    if (_cameraReset.isAnimating) {
+      _cameraReset.stop();
+      widget.onCameraResetEnd?.call();
+    }
     _stopInertia();
     _resetLodDebounce();
     _baseZoom = _zoom;

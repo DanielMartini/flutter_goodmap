@@ -125,6 +125,8 @@ class GoodMapGlobe extends StatefulWidget {
 class _GoodMapGlobeState extends State<GoodMapGlobe> {
   late LatLng _center = widget.initialCenter;
   late double _globeStartZoom = widget.initialZoom;
+  int _globeCameraToken = 0;
+  bool _globeCameraResetting = false;
   bool _flat = false;
 
   @override
@@ -133,6 +135,8 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
     if (oldWidget.resetToken != widget.resetToken) {
       _center = widget.initialCenter;
       _globeStartZoom = widget.initialZoom;
+      _globeCameraResetting = true;
+      _globeCameraToken++;
       _flat = false;
       widget.onSurfaceChanged?.call(false);
     }
@@ -140,58 +144,82 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
 
   void _setFlat(bool flat) {
     if (_flat == flat) return;
-    setState(() => _flat = flat);
+    setState(() {
+      _flat = flat;
+      if (!flat) {
+        _globeStartZoom = widget.globeEntryZoom;
+        _globeCameraResetting = true;
+        _globeCameraToken++;
+      }
+    });
     widget.onSurfaceChanged?.call(flat);
   }
 
   @override
   Widget build(BuildContext context) {
-    final Widget child =
-        _flat
-            ? GoodMap(
-              key: const ValueKey('flat'),
-              initialCenter: _center,
-              initialZoom: widget.flatEntryZoom,
-              controls: widget.controls,
-              markers: widget.markers,
-              popups: widget.popups,
-              basemapConfig: widget.basemapConfig,
-              onBasemapError: widget.onBasemapError,
-              onCameraChanged: (pos) {
-                _center = pos.target;
-                if (pos.zoom < widget.flatZoomToGlobe) {
-                  _globeStartZoom = widget.globeEntryZoom;
-                  _setFlat(false);
-                }
-              },
-            )
-            : GoodGlobe(
-              key: const ValueKey('globe'),
-              initialCenter: _center,
-              initialZoom: _globeStartZoom,
-              minZoom: widget.minZoom,
-              resetToken: widget.resetToken,
-              markers: widget.markers,
-              points: widget.points,
-              popups: widget.popups,
-              arcs: widget.arcs,
-              heatmaps: widget.heatmaps,
-              atmosphere: widget.atmosphere,
-              onTap: widget.onTap,
-              showDottedGrid: widget.showDottedGrid,
-              dottedGridColor: widget.dottedGridColor,
-              dottedGridRadius: widget.dottedGridRadius,
-              dateTime: widget.dateTime,
-              sunPosition: widget.sunPosition,
-              timeRange: widget.timeRange,
-              basemapConfig: widget.basemapConfig,
-              onBasemapError: widget.onBasemapError,
-              onCameraChanged: (center, zoom) {
-                _center = center;
-                if (zoom >= widget.globeZoomToFlat) _setFlat(true);
-              },
-            );
+    final globe = GoodGlobe(
+      key: const ValueKey('globe'),
+      initialCenter: _center,
+      initialZoom: _globeStartZoom,
+      minZoom: widget.minZoom,
+      resetToken: _globeCameraToken,
+      markers: widget.markers,
+      points: widget.points,
+      popups: widget.popups,
+      arcs: widget.arcs,
+      heatmaps: widget.heatmaps,
+      atmosphere: widget.atmosphere,
+      onTap: widget.onTap,
+      showDottedGrid: widget.showDottedGrid,
+      dottedGridColor: widget.dottedGridColor,
+      dottedGridRadius: widget.dottedGridRadius,
+      dateTime: widget.dateTime,
+      sunPosition: widget.sunPosition,
+      timeRange: widget.timeRange,
+      basemapConfig: widget.basemapConfig,
+      onBasemapError: widget.onBasemapError,
+      onCameraResetEnd: () => _globeCameraResetting = false,
+      onCameraChanged: (center, zoom) {
+        _center = center;
+        if (!_globeCameraResetting && zoom >= widget.globeZoomToFlat) {
+          _setFlat(true);
+        }
+      },
+    );
 
-    return AnimatedSwitcher(duration: widget.transition, child: child);
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        TickerMode(
+          enabled: !_flat,
+          child: IgnorePointer(ignoring: _flat, child: globe),
+        ),
+        IgnorePointer(
+          ignoring: !_flat,
+          child: AnimatedSwitcher(
+            duration: widget.transition,
+            child:
+                _flat
+                    ? GoodMap(
+                      key: const ValueKey('flat'),
+                      initialCenter: _center,
+                      initialZoom: widget.flatEntryZoom,
+                      controls: widget.controls,
+                      markers: widget.markers,
+                      popups: widget.popups,
+                      basemapConfig: widget.basemapConfig,
+                      onBasemapError: widget.onBasemapError,
+                      onCameraChanged: (pos) {
+                        _center = pos.target;
+                        if (pos.zoom < widget.flatZoomToGlobe) {
+                          _setFlat(false);
+                        }
+                      },
+                    )
+                    : const SizedBox.expand(key: ValueKey('flat-placeholder')),
+          ),
+        ),
+      ],
+    );
   }
 }
