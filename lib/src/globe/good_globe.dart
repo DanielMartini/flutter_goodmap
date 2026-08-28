@@ -24,6 +24,7 @@ class GoodGlobe extends StatefulWidget {
     required this.initialCenter,
     this.initialZoom = 1,
     this.minZoom = 0.0,
+    this.resetToken = 0,
     this.markers = const [],
     @Deprecated('Use markers instead') this.points = const [],
     this.arcs = const [],
@@ -53,6 +54,10 @@ class GoodGlobe extends StatefulWidget {
   ///
   /// Must be between 0 and 6. Defaults to 0 to preserve the full zoom range.
   final double minZoom;
+
+  /// Changes to this value reset the camera to [initialCenter] and [initialZoom].
+  /// The globe remains mounted and keeps its loaded basemap resources.
+  final int resetToken;
 
   /// Labelled points plotted on the globe.
   @Deprecated('Use markers instead')
@@ -215,6 +220,16 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
   @override
   void didUpdateWidget(GoodGlobe oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.resetToken != widget.resetToken) {
+      _stopInertia();
+      _resetLodDebounce();
+      _rotationX = widget.initialCenter.latitude * math.pi / 180.0;
+      _rotationZ = widget.initialCenter.longitude * math.pi / 180.0;
+      _zoom = math.max(widget.initialZoom, widget.minZoom).toDouble();
+      _selectedMarker = null;
+      _scheduleLodDetails();
+      widget.onCameraChanged?.call(_center, _zoom);
+    }
     if (oldWidget.minZoom != widget.minZoom && _zoom < widget.minZoom) {
       _zoom = widget.minZoom;
     }
