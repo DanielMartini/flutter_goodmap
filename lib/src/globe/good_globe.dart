@@ -157,9 +157,16 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
 
   // Inertia: angular velocity in radians/second, decayed by a Ticker.
   late final Ticker _ticker = createTicker(_onTick);
+  late final AnimationController _cameraReset;
   double _angVelX = 0;
   double _angVelZ = 0;
   double? _lastTickSeconds;
+  double _resetStartRotationX = 0;
+  double _resetStartRotationZ = 0;
+  double _resetStartZoom = 1;
+  double _resetEndRotationX = 0;
+  double _resetEndRotationZ = 0;
+  double _resetEndZoom = 1;
 
   static const double _maxLatRad = 85 * math.pi / 180;
   static const double _frictionTau = 0.4; // larger = longer glide
@@ -206,6 +213,10 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
+    _cameraReset = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    )..addListener(_onCameraResetTick);
     _rotationX = widget.initialCenter.latitude * math.pi / 180.0;
     _rotationZ = widget.initialCenter.longitude * math.pi / 180.0;
     _zoom = math.max(widget.initialZoom, widget.minZoom).toDouble();
@@ -221,14 +232,7 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
   void didUpdateWidget(GoodGlobe oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.resetToken != widget.resetToken) {
-      _stopInertia();
-      _resetLodDebounce();
-      _rotationX = widget.initialCenter.latitude * math.pi / 180.0;
-      _rotationZ = widget.initialCenter.longitude * math.pi / 180.0;
-      _zoom = math.max(widget.initialZoom, widget.minZoom).toDouble();
-      _selectedMarker = null;
-      _scheduleLodDetails();
-      widget.onCameraChanged?.call(_center, _zoom);
+      _animateToInitialCamera();
     }
     if (oldWidget.minZoom != widget.minZoom && _zoom < widget.minZoom) {
       _zoom = widget.minZoom;
@@ -390,7 +394,35 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
 
   // --- Gestures + inertia --------------------------------------------------
 
+  void _animateToInitialCamera() {
+    _stopInertia();
+    _resetLodDebounce();
+    _selectedMarker = null;
+    _resetStartRotationX = _rotationX;
+    _resetStartRotationZ = _rotationZ;
+    _resetStartZoom = _zoom;
+    _resetEndRotationX = widget.initialCenter.latitude * math.pi / 180.0;
+    final targetRotationZ = widget.initialCenter.longitude * math.pi / 180.0;
+    final rotationDelta = (targetRotationZ - _rotationZ + math.pi) % (2 * math.pi) - math.pi;
+    _resetEndRotationZ = _rotationZ + rotationDelta;
+    _resetEndZoom = math.max(widget.initialZoom, widget.minZoom).toDouble();
+    _cameraReset.forward(from: 0);
+  }
+
+  void _onCameraResetTick() {
+    if (_cameraReset.value == 0) return;
+    final t = Curves.easeInOut.transform(_cameraReset.value);
+    setState(() {
+      _rotationX = _resetStartRotationX + (_resetEndRotationX - _resetStartRotationX) * t;
+      _rotationZ = _resetStartRotationZ + (_resetEndRotationZ - _resetStartRotationZ) * t;
+      _zoom = _resetStartZoom + (_resetEndZoom - _resetStartZoom) * t;
+    });
+    widget.onCameraChanged?.call(_center, _zoom);
+    if (_cameraReset.isCompleted) _scheduleLodDetails();
+  }
+
   void _onScaleStart(ScaleStartDetails d) {
+    if (_cameraReset.isAnimating) _cameraReset.stop();
     _stopInertia();
     _resetLodDebounce();
     _baseZoom = _zoom;
@@ -498,6 +530,7 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
   @override
   void dispose() {
     _dash.dispose();
+    _cameraReset.dispose();
     _ticker.dispose();
     _atlasBuilder?.dispose();
     _atlas?.dispose();
