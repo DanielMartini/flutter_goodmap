@@ -46,6 +46,7 @@ class MarkerOptions {
     this.label,
     this.color,
     this.radius,
+    this.useNativeMapMarker = false,
     this.pulse = false,
     this.pulseMaxRadius,
     this.timestamp,
@@ -65,6 +66,12 @@ class MarkerOptions {
 
   /// Optional radius (used for fallback dot markers).
   final double? radius;
+
+  /// Draws this marker as a native MapLibre circle on the flat map.
+  ///
+  /// This keeps the marker synchronized with the map during camera gestures.
+  /// The [child] is still used when the same marker is displayed on the globe.
+  final bool useNativeMapMarker;
 
   /// When true, draws an animated ripple ring around the marker dot on the globe.
   final bool pulse;

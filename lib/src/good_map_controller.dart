@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter/widgets.dart';
 import 'package:maplibre_gl/maplibre_gl.dart' hide CircleOptions;
+import 'package:maplibre_gl/maplibre_gl.dart' as maplibre;
 
 import 'heatmap/heatmap.dart';
 import 'internal/registry.dart';
@@ -28,6 +29,7 @@ class GoodMapController extends ChangeNotifier {
   GoodMapController(this._native) {
     _markers.addListener(notifyListeners);
     _popups.addListener(notifyListeners);
+    _native.onCircleTapped.add(_onNativeMarkerCircleTapped);
   }
 
   final MapLibreMapController _native;
@@ -90,6 +92,8 @@ class GoodMapController extends ChangeNotifier {
 
   // Maps marker id -> native Symbol for image markers (GL-scene path).
   final Map<int, Symbol> _symbols = <int, Symbol>{};
+  final Map<int, maplibre.Circle> _markerCircles = <int, maplibre.Circle>{};
+  final Map<String, int> _markerCircleIds = <String, int>{};
 
   // --- Markers ------------------------------------------------------------
 
@@ -97,7 +101,9 @@ class GoodMapController extends ChangeNotifier {
   /// interactive overlay marker, or an `image` for a static GL-scene symbol.
   MarkerId addMarker(MarkerOptions options) {
     final int id = _markers.add(options);
-    if (options.image != null) {
+    if (options.useNativeMapMarker) {
+      _createNativeMarkerCircle(id, options);
+    } else if (options.image != null) {
       _createSymbol(id, options);
     }
     return MarkerId(id);
@@ -106,8 +112,12 @@ class GoodMapController extends ChangeNotifier {
   /// Replaces the options for an existing marker. Unknown [id] is a no-op.
   void updateMarker(MarkerId id, MarkerOptions options) {
     if (!_markers.items.containsKey(id.value)) return;
+    _disposeSymbol(id.value);
+    _disposeNativeMarkerCircle(id.value);
     _markers.update(id.value, options);
-    if (options.image != null) {
+    if (options.useNativeMapMarker) {
+      _createNativeMarkerCircle(id.value, options);
+    } else if (options.image != null) {
       _createSymbol(
         id.value,
         options,
@@ -120,6 +130,7 @@ class GoodMapController extends ChangeNotifier {
     if (!_markers.items.containsKey(id.value)) return;
     _markers.remove(id.value);
     _disposeSymbol(id.value);
+    _disposeNativeMarkerCircle(id.value);
   }
 
   /// Removes all markers.
@@ -128,6 +139,11 @@ class GoodMapController extends ChangeNotifier {
       _native.removeSymbol(symbol);
     }
     _symbols.clear();
+    for (final circle in _markerCircles.values) {
+      _native.removeCircle(circle);
+    }
+    _markerCircles.clear();
+    _markerCircleIds.clear();
     _markers.clear();
   }
 
@@ -137,8 +153,12 @@ class GoodMapController extends ChangeNotifier {
   /// Flutter widgets, not part of the GL scene.
   void reapplyGlObjects() {
     _symbols.clear();
+    _markerCircles.clear();
+    _markerCircleIds.clear();
     for (final entry in _markers.items.entries) {
-      if (entry.value.image != null) {
+      if (entry.value.useNativeMapMarker) {
+        _createNativeMarkerCircle(entry.key, entry.value);
+      } else if (entry.value.image != null) {
         _createSymbol(entry.key, entry.value);
       }
     }
@@ -178,6 +198,43 @@ class GoodMapController extends ChangeNotifier {
   void _disposeSymbol(int id) {
     final symbol = _symbols.remove(id);
     if (symbol != null) _native.removeSymbol(symbol);
+  }
+
+  Future<void> _createNativeMarkerCircle(
+    int id,
+    MarkerOptions options,
+  ) async {
+    final color = options.color ?? const Color(0xFF4F86F7);
+    final circle = await _native.addCircle(
+      maplibre.CircleOptions(
+        geometry: options.position,
+        circleRadius: options.radius ?? 4,
+        circleColor: color.toHexStringRGB(),
+        circleOpacity: color.a,
+        circleStrokeWidth: 1,
+        circleStrokeColor: const Color(0xFFFFFFFF).toHexStringRGB(),
+        circleStrokeOpacity: 0.9,
+      ),
+    );
+    if (_markers.items[id] != options || !options.useNativeMapMarker) {
+      _native.removeCircle(circle);
+      return;
+    }
+    _markerCircles[id] = circle;
+    _markerCircleIds[circle.id] = id;
+  }
+
+  void _disposeNativeMarkerCircle(int id) {
+    final circle = _markerCircles.remove(id);
+    if (circle == null) return;
+    _markerCircleIds.remove(circle.id);
+    _native.removeCircle(circle);
+  }
+
+  void _onNativeMarkerCircleTapped(maplibre.Circle circle) {
+    final markerId = _markerCircleIds[circle.id];
+    if (markerId == null) return;
+    _markers.items[markerId]?.onTap?.call();
   }
 
   // --- Polylines / routes -------------------------------------------------
@@ -499,7 +556,8 @@ class GoodMapController extends ChangeNotifier {
   /// All overlay-widget entries (child-markers + popups) to be projected.
   List<OverlayEntryData> get overlayEntries => <OverlayEntryData>[
     for (final entry in _markers.items.entries)
-      if (entry.value.child != null || entry.value.image == null)
+      if (!entry.value.useNativeMapMarker &&
+          (entry.value.child != null || entry.value.image == null))
         OverlayEntryData(
           key: MarkerId(entry.key),
           position: entry.value.position,
@@ -527,6 +585,7 @@ class GoodMapController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _native.onCircleTapped.remove(_onNativeMarkerCircleTapped);
     _markers.dispose();
     _popups.dispose();
     _polylines.dispose();
