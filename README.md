@@ -46,6 +46,7 @@ labels, and animated dashed arcs — back-of-globe overlays hide automatically.
 GoodGlobe(
   initialCenter: const LatLng(-8.84, 13.23), // Luanda
   initialZoom: 1.0,
+  minZoom: 0.5,
   atmosphere: false,
   markers: const [
     MarkerOptions(position: LatLng(-8.84, 13.23), label: 'Luanda', color: Colors.white, radius: 6),
@@ -58,7 +59,7 @@ GoodGlobe(
 )
 ```
 
-- **`GoodGlobe`** — `markers`, `arcs`, `atmosphere`, `onTap`, `onPointTap`.
+- **`GoodGlobe`** — `markers`, `arcs`, `atmosphere`, `minZoom`, `onTap`, `onPointTap`.
 - **`MarkerOptions`** — `position`, `label`, `color`, `radius`.
 - **`GlobeArc`** — `from`, `to`, `color`, `width`, `dashed`, `bend`, `segments`.
 
@@ -71,6 +72,7 @@ threshold, and back out to the globe — same API plus `markers`/`arcs`/`atmosph
 ```dart
 GoodMapGlobe(
   initialCenter: const LatLng(-8.84, 13.23),
+  minZoom: 0.5,
   markers: [...],
   arcs: [...],
 )

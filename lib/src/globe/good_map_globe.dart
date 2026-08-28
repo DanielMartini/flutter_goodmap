@@ -19,6 +19,7 @@ class GoodMapGlobe extends StatefulWidget {
   const GoodMapGlobe({
     required this.initialCenter,
     this.initialZoom = 1.0,
+    this.minZoom = 0.0,
     this.markers = const [],
     @Deprecated('Use markers instead') this.points = const [],
     this.popups = const [],
@@ -42,12 +43,17 @@ class GoodMapGlobe extends StatefulWidget {
     this.basemapConfig,
     this.onBasemapError,
     super.key,
-  });
+  }) : assert(minZoom >= 0.0 && minZoom <= 6.0);
 
   final LatLng initialCenter;
 
   /// Initial globe zoom (0 = far, ~6 = close).
   final double initialZoom;
+
+  /// Minimum zoom allowed while the globe surface is active.
+  ///
+  /// Must be between 0 and 6. Defaults to 0 to preserve the full zoom range.
+  final double minZoom;
 
   /// Custom markers (widgets, assets, or fallback dots) plotted on the map and globe.
   final List<MarkerOptions> markers;
@@ -147,6 +153,7 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
               key: const ValueKey('globe'),
               initialCenter: _center,
               initialZoom: _globeStartZoom,
+              minZoom: widget.minZoom,
               markers: widget.markers,
               points: widget.points,
               popups: widget.popups,

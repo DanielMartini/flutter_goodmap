@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Globe
+- Added configurable `minZoom` support to `GoodGlobe` and `GoodMapGlobe`. The default remains `0.0` for backward compatibility.
+
 ## 0.6.0
 
 Web Support.
