@@ -308,20 +308,23 @@ class AtmospherePainter extends CustomPainter {
     required this.center,
     required this.radius,
     required this.color,
+    required this.glowIntensity,
   });
 
   final Offset center;
   final double radius;
   final Color color;
+  final double glowIntensity;
 
   @override
   void paint(Canvas canvas, Size size) {
     final glowRadius = radius * 1.22;
     final edge = radius / glowRadius; // where the globe silhouette sits
+    final glowAlpha = (0.45 * glowIntensity).clamp(0.0, 1.0).toDouble();
     final gradient = RadialGradient(
       colors: [
         color.withValues(alpha: 0),
-        color.withValues(alpha: 0.45),
+        color.withValues(alpha: glowAlpha),
         color.withValues(alpha: 0),
       ],
       stops: [edge - 0.06, edge, 1.0],
@@ -336,5 +339,8 @@ class AtmospherePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(AtmospherePainter old) =>
-      old.center != center || old.radius != radius || old.color != color;
+      old.center != center ||
+      old.radius != radius ||
+      old.color != color ||
+      old.glowIntensity != glowIntensity;
 }

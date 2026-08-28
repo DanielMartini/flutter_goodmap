@@ -27,6 +27,8 @@ class GoodMapGlobe extends StatefulWidget {
     this.arcs = const [],
     this.heatmaps = const [],
     this.atmosphere = false,
+    this.atmosphereColor,
+    this.atmosphereGlowIntensity = 1.0,
     this.controls = const GoodControls(),
     this.globeZoomToFlat = 3.5,
     this.flatZoomToGlobe = 4.0,
@@ -45,7 +47,8 @@ class GoodMapGlobe extends StatefulWidget {
     this.basemapConfig,
     this.onBasemapError,
     super.key,
-  }) : assert(minZoom >= 0.0 && minZoom <= 6.0);
+  }) : assert(minZoom >= 0.0 && minZoom <= 6.0),
+       assert(atmosphereGlowIntensity >= 0.0 && atmosphereGlowIntensity <= 2.0);
 
   final LatLng initialCenter;
 
@@ -77,6 +80,14 @@ class GoodMapGlobe extends StatefulWidget {
   final List<HeatmapOptions> heatmaps;
 
   final bool atmosphere;
+
+  /// Atmosphere colour; defaults to the theme's primary colour.
+  final Color? atmosphereColor;
+
+  /// Strength of the atmospheric glow from 0 (hidden) to 2 (double strength).
+  /// A value of 1 preserves the default appearance.
+  final double atmosphereGlowIntensity;
+
   final GoodControls controls;
 
   /// Globe zoom at which it hands off to the flat map.
@@ -174,6 +185,8 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
       arcs: widget.arcs,
       heatmaps: widget.heatmaps,
       atmosphere: widget.atmosphere,
+      atmosphereColor: widget.atmosphereColor,
+      atmosphereGlowIntensity: widget.atmosphereGlowIntensity,
       onTap: widget.onTap,
       showDottedGrid: widget.showDottedGrid,
       dottedGridColor: widget.dottedGridColor,

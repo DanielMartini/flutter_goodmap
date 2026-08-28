@@ -32,6 +32,7 @@ class GoodGlobe extends StatefulWidget {
     this.heatmaps = const [],
     this.atmosphere = false,
     this.atmosphereColor,
+    this.atmosphereGlowIntensity = 1.0,
     this.onCameraChanged,
     this.onTap,
     this.onPointTap,
@@ -46,7 +47,8 @@ class GoodGlobe extends StatefulWidget {
     this.onCameraResetEnd,
     super.key,
     @visibleForTesting this.renderEnabled = true,
-  }) : assert(minZoom >= 0.0 && minZoom <= 6.0);
+  }) : assert(minZoom >= 0.0 && minZoom <= 6.0),
+       assert(atmosphereGlowIntensity >= 0.0 && atmosphereGlowIntensity <= 2.0);
 
   final LatLng initialCenter;
   final double initialZoom;
@@ -81,6 +83,10 @@ class GoodGlobe extends StatefulWidget {
 
   /// Atmosphere colour; defaults to the theme's primary colour.
   final Color? atmosphereColor;
+
+  /// Strength of the atmospheric glow from 0 (hidden) to 2 (double strength).
+  /// A value of 1 preserves the default appearance.
+  final double atmosphereGlowIntensity;
 
   /// Called whenever the camera changes (drag/zoom/inertia), with the new
   /// centre and zoom.
@@ -673,6 +679,7 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
                     color:
                         widget.atmosphereColor ??
                         Theme.of(context).colorScheme.primary,
+                    glowIntensity: widget.atmosphereGlowIntensity,
                   ),
                 ),
               if (widget.renderEnabled && shader != null && _atlas != null)
