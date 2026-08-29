@@ -15,6 +15,21 @@ void main() {
     expect(hybrid.minZoom, 0.75);
   });
 
+  test('globe widgets expose a configurable camera reset curve', () {
+    const globe = GoodGlobe(
+      initialCenter: LatLng(0, 0),
+      cameraResetCurve: Curves.easeOutQuart,
+      renderEnabled: false,
+    );
+    const hybrid = GoodMapGlobe(
+      initialCenter: LatLng(0, 0),
+      cameraResetCurve: Curves.easeOutQuart,
+    );
+
+    expect(globe.cameraResetCurve, Curves.easeOutQuart);
+    expect(hybrid.cameraResetCurve, Curves.easeOutQuart);
+  });
+
   testWidgets('pinch zoom respects minZoom', (tester) async {
     double? seenZoom;
     await tester.pumpWidget(

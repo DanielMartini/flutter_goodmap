@@ -12,15 +12,17 @@ import 'good_globe.dart';
 /// A globe that becomes a street map when you zoom in.
 ///
 /// Shows a [GoodGlobe] (world/regional view, with arcs + points) at low zoom,
-/// then cross-fades to the native [GoodMap] — full vector streets and cities —
-/// once you pinch past [globeZoomToFlat]. Zooming the flat map back out below
-/// [flatZoomToGlobe] returns to the globe. The centre coordinate carries across.
+/// then fades through black to the native [GoodMap] — full vector streets and
+/// cities — once you pinch past [globeZoomToFlat]. Zooming the flat map back out
+/// below [flatZoomToGlobe] returns to the globe. The centre coordinate carries
+/// across.
 class GoodMapGlobe extends StatefulWidget {
   const GoodMapGlobe({
     required this.initialCenter,
     this.initialZoom = 1.0,
     this.minZoom = 0.0,
     this.resetToken = 0,
+    this.cameraResetCurve = Curves.easeInOut,
     this.markers = const [],
     @Deprecated('Use markers instead') this.points = const [],
     this.popups = const [],
@@ -65,6 +67,9 @@ class GoodMapGlobe extends StatefulWidget {
   /// The widget remains mounted so loaded globe resources can be reused.
   final int resetToken;
 
+  /// Curve used when [resetToken] returns the globe camera to its initial state.
+  final Curve cameraResetCurve;
+
   /// Custom markers (widgets, assets, or fallback dots) plotted on the map and globe.
   final List<MarkerOptions> markers;
 
@@ -103,6 +108,7 @@ class GoodMapGlobe extends StatefulWidget {
   /// Globe zoom the globe mounts at when returning from the flat map.
   final double globeEntryZoom;
 
+  /// Total duration of the fade-to-black surface transition.
   final Duration transition;
 
   /// Tapped coordinate on the globe surface (globe mode only).
@@ -144,17 +150,29 @@ class GoodMapGlobe extends StatefulWidget {
   State<GoodMapGlobe> createState() => _GoodMapGlobeState();
 }
 
-class _GoodMapGlobeState extends State<GoodMapGlobe> {
+class _GoodMapGlobeState extends State<GoodMapGlobe>
+    with SingleTickerProviderStateMixin {
   late LatLng _center = widget.initialCenter;
   late double _globeStartZoom = widget.initialZoom;
+  late final AnimationController _surfaceTransition = AnimationController(
+    vsync: this,
+    duration: widget.transition,
+  );
   int _globeCameraToken = 0;
   bool _globeCameraResetting = false;
+  bool _surfaceTransitionInProgress = false;
   bool _flat = false;
 
   @override
   void didUpdateWidget(GoodMapGlobe oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.transition != widget.transition) {
+      _surfaceTransition.duration = widget.transition;
+    }
     if (oldWidget.resetToken != widget.resetToken) {
+      _surfaceTransition.stop();
+      _surfaceTransition.value = 0;
+      _surfaceTransitionInProgress = false;
       _center = widget.initialCenter;
       _globeStartZoom = widget.initialZoom;
       _globeCameraResetting = true;
@@ -164,8 +182,20 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
     }
   }
 
-  void _setFlat(bool flat) {
-    if (_flat == flat) return;
+  Future<void> _setFlat(bool flat) async {
+    if (_flat == flat || _surfaceTransitionInProgress) return;
+    setState(() => _surfaceTransitionInProgress = true);
+
+    final phaseDuration = Duration(
+      microseconds: widget.transition.inMicroseconds ~/ 2,
+    );
+    await _surfaceTransition.animateTo(
+      1,
+      duration: phaseDuration,
+      curve: Curves.easeIn,
+    );
+    if (!mounted) return;
+
     setState(() {
       _flat = flat;
       if (!flat) {
@@ -175,6 +205,23 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
       }
     });
     widget.onSurfaceChanged?.call(flat);
+
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    await _surfaceTransition.animateBack(
+      0,
+      duration: phaseDuration,
+      curve: Curves.easeOut,
+    );
+    if (mounted) {
+      setState(() => _surfaceTransitionInProgress = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _surfaceTransition.dispose();
+    super.dispose();
   }
 
   @override
@@ -185,6 +232,7 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
       initialZoom: _globeStartZoom,
       minZoom: widget.minZoom,
       resetToken: _globeCameraToken,
+      cameraResetCurve: widget.cameraResetCurve,
       markers: widget.markers,
       points: widget.points,
       popups: widget.popups,
@@ -220,31 +268,38 @@ class _GoodMapGlobeState extends State<GoodMapGlobe> {
         ),
         IgnorePointer(
           ignoring: !_flat,
-          child: AnimatedSwitcher(
-            duration: widget.transition,
-            child:
-                _flat
-                    ? GoodMap(
-                      key: const ValueKey('flat'),
-                      initialCenter: _center,
-                      initialZoom: widget.flatEntryZoom,
-                      controls: widget.controls,
-                      markers: widget.markers,
-                      popups: widget.popups,
-                      locale: widget.locale,
-                      waterColor:
-                          widget.waterColor ??
-                          _cartoGlobeWaterColor(Theme.of(context).brightness),
-                      basemapConfig: widget.basemapConfig,
-                      onBasemapError: widget.onBasemapError,
-                      onCameraChanged: (pos) {
-                        _center = pos.target;
-                        if (pos.zoom < widget.flatZoomToGlobe) {
-                          _setFlat(false);
-                        }
-                      },
-                    )
-                    : const SizedBox.expand(key: ValueKey('flat-placeholder')),
+          child:
+              _flat
+                  ? GoodMap(
+                    key: const ValueKey('flat'),
+                    initialCenter: _center,
+                    initialZoom: widget.flatEntryZoom,
+                    controls: widget.controls,
+                    markers: widget.markers,
+                    popups: widget.popups,
+                    locale: widget.locale,
+                    waterColor:
+                        widget.waterColor ??
+                        _cartoGlobeWaterColor(Theme.of(context).brightness),
+                    basemapConfig: widget.basemapConfig,
+                    onBasemapError: widget.onBasemapError,
+                    onCameraChanged: (pos) {
+                      _center = pos.target;
+                      if (pos.zoom < widget.flatZoomToGlobe) {
+                        _setFlat(false);
+                      }
+                    },
+                  )
+                  : const SizedBox.expand(key: ValueKey('flat-placeholder')),
+        ),
+        IgnorePointer(
+          ignoring: !_surfaceTransitionInProgress,
+          child: FadeTransition(
+            opacity: _surfaceTransition,
+            child: const ColoredBox(
+              key: ValueKey('surface-transition-blackout'),
+              color: Colors.black,
+            ),
           ),
         ),
       ],
