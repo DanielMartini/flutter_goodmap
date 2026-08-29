@@ -25,6 +25,7 @@ class GoodGlobe extends StatefulWidget {
     this.initialZoom = 1,
     this.minZoom = 0.0,
     this.resetToken = 0,
+    this.cameraResetCurve = Curves.easeInOut,
     this.markers = const [],
     @Deprecated('Use markers instead') this.points = const [],
     this.arcs = const [],
@@ -61,6 +62,9 @@ class GoodGlobe extends StatefulWidget {
   /// Changes to this value animate the camera to [initialCenter] and [initialZoom].
   /// The globe remains mounted and keeps its loaded basemap resources.
   final int resetToken;
+
+  /// Curve used when [resetToken] animates the camera back to its initial state.
+  final Curve cameraResetCurve;
 
   /// Labelled points plotted on the globe.
   @Deprecated('Use markers instead')
@@ -422,7 +426,7 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
 
   void _onCameraResetTick() {
     if (_cameraReset.value == 0) return;
-    final t = Curves.easeInOut.transform(_cameraReset.value);
+    final t = widget.cameraResetCurve.transform(_cameraReset.value);
     setState(() {
       _rotationX =
           _resetStartRotationX +
