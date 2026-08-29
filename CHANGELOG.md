@@ -4,6 +4,16 @@
 
 ### Globe
 - Added configurable `minZoom` support to `GoodGlobe` and `GoodMapGlobe`. The default remains `0.0` for backward compatibility.
+- Added `GoodGlobe.cameraResetDuration` (default 350ms). `Duration.zero` applies the `resetToken` camera in the same frame instead of animating.
+
+### Hybrid (`GoodMapGlobe`) — smoother globe -> map handoff
+- **No more flicker on the way in.** The blackout is now held until the native map has loaded its style *and* composited a first frame, instead of fading out one frame after mounting it. That removed the grey flash, the brief reappearance of the globe through the not-yet-painted platform view, and the pop-in of the map.
+- **Matching zoom across surfaces.** `flatEntryZoom`, `globeEntryZoom` and `flatZoomToGlobe` are now `double?` and default to `null` = automatic: each surface mounts at the zoom whose on-screen ground scale matches the one it replaces, so the handoff no longer jumps (the old fixed `flatEntryZoom: 5.0` was ~1.6 zoom levels past the `globeZoomToFlat: 3.5` handoff on a phone-sized viewport). Passing explicit values keeps the previous behaviour.
+- The flat -> globe threshold derives from `globeZoomToFlat` with a hysteresis margin, so the two surfaces can't ping-pong at the boundary.
+- The globe camera now snaps (rather than animating) when returning from the flat map, since that move happens behind the blackout.
+- The globe is hidden, and an opaque water-coloured backdrop sits under the native map, while the flat surface is active.
+- `GoodMap` paints its `waterColor` instead of the theme surface colour while the basemap style is still loading.
+- The CARTO style JSON is cached process-wide once it has loaded, so a remounted `GoodMap` (every globe -> flat handoff) no longer refetches it before it can paint.
 
 ## 0.6.0
 

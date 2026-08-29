@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/material.dart' show Brightness;
 import 'package:http/http.dart' as http;
 
@@ -15,10 +16,25 @@ class CartoStyleLoadException implements Exception {
 }
 
 class CartoStyleLoader {
-  CartoStyleLoader({required http.Client client}) : _client = client;
+  CartoStyleLoader({required http.Client client, this.shareCompleted = false})
+    : _client = client;
+
+  /// Styles that finished loading, keyed like [_cache]. Shared by every loader
+  /// with [shareCompleted] set, so remounting a map — which is exactly what the
+  /// globe -> flat handoff does — reuses the style instead of refetching a few
+  /// hundred KB of JSON before it can paint. Only successes land here; a failed
+  /// load is always retried.
+  static final Map<String, String> _completed = {};
+
+  /// Whether this loader reads and writes the process-wide [_completed] cache.
+  final bool shareCompleted;
 
   final http.Client _client;
   final Map<String, Future<String>> _cache = {};
+
+  /// Drops the process-wide cache of completed styles.
+  @visibleForTesting
+  static void clearCompletedCache() => _completed.clear();
 
   Future<String> load(
     Brightness brightness,
@@ -38,10 +54,20 @@ class CartoStyleLoader {
       languageCode ?? '',
       waterColor ?? '',
     ].join('|');
-    return _cache.putIfAbsent(
-      cacheKey,
-      () => _loadAndRewrite(styleUrl, apiKey, languageCode, waterColor),
-    );
+    if (shareCompleted) {
+      final completed = _completed[cacheKey];
+      if (completed != null) return Future<String>.value(completed);
+    }
+    return _cache.putIfAbsent(cacheKey, () async {
+      final style = await _loadAndRewrite(
+        styleUrl,
+        apiKey,
+        languageCode,
+        waterColor,
+      );
+      if (shareCompleted) _completed[cacheKey] = style;
+      return style;
+    });
   }
 
   Future<String> _loadAndRewrite(

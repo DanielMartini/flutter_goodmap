@@ -78,6 +78,7 @@ class _GoodMapState extends State<GoodMap> {
   final http.Client _basemapClient = http.Client();
   late final CartoStyleLoader _styleLoader = CartoStyleLoader(
     client: _basemapClient,
+    shareCompleted: true,
   );
   Future<String>? _styleFuture;
   String? _styleLoadKey;
@@ -255,17 +256,23 @@ class _GoodMapState extends State<GoodMap> {
     }
     final future = _styleFuture;
     if (future == null) {
-      return ColoredBox(color: Theme.of(context).colorScheme.surface);
+      return ColoredBox(color: _placeholderColor(context));
     }
     return FutureBuilder<String>(
       future: future,
       builder: (context, snapshot) {
         final style = snapshot.data;
         if (style != null) return _buildMap(context, style);
-        return ColoredBox(color: Theme.of(context).colorScheme.surface);
+        return ColoredBox(color: _placeholderColor(context));
       },
     );
   }
+
+  /// Shown while the style is still loading. Uses the water colour when the
+  /// host provided one so the wait blends into the map instead of flashing the
+  /// surface grey.
+  Color _placeholderColor(BuildContext context) =>
+      widget.waterColor ?? Theme.of(context).colorScheme.surface;
 
   bool get _requiresStyleRewrite =>
       widget.basemapConfig != null ||

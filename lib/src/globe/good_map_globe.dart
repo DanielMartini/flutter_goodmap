@@ -1,21 +1,31 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart' show LatLng;
 
 import '../good_map.dart';
+import '../good_map_controller.dart' show GoodMapController;
 import '../heatmap/heatmap.dart';
 import '../markers/marker.dart';
 import '../popups/popup.dart';
 import '../theme/carto_basemap_config.dart';
 import 'globe_overlays.dart';
 import 'good_globe.dart';
+import 'sphere_projection.dart';
 
 /// A globe that becomes a street map when you zoom in.
 ///
 /// Shows a [GoodGlobe] (world/regional view, with arcs + points) at low zoom,
 /// then fades through black to the native [GoodMap] — full vector streets and
 /// cities — once you pinch past [globeZoomToFlat]. Zooming the flat map back out
-/// below [flatZoomToGlobe] returns to the globe. The centre coordinate carries
-/// across.
+/// below [flatZoomToGlobe] returns to the globe. Centre *and* scale carry
+/// across: by default each surface mounts at the zoom that matches the other's
+/// on-screen ground scale, so the handoff has no visible jump.
+///
+/// The blackout is held until the incoming surface has actually painted — the
+/// native map needs its style plus a first composited frame — so the fade never
+/// reveals a half-built map.
 class GoodMapGlobe extends StatefulWidget {
   const GoodMapGlobe({
     required this.initialCenter,
@@ -23,6 +33,7 @@ class GoodMapGlobe extends StatefulWidget {
     this.minZoom = 0.0,
     this.resetToken = 0,
     this.cameraResetCurve = Curves.easeInOut,
+    this.cameraResetDuration = const Duration(milliseconds: 350),
     this.markers = const [],
     @Deprecated('Use markers instead') this.points = const [],
     this.popups = const [],
@@ -33,9 +44,9 @@ class GoodMapGlobe extends StatefulWidget {
     this.atmosphereGlowIntensity = 1.0,
     this.controls = const GoodControls(),
     this.globeZoomToFlat = 3.5,
-    this.flatZoomToGlobe = 4.0,
-    this.flatEntryZoom = 5.0,
-    this.globeEntryZoom = 3.0,
+    this.flatZoomToGlobe,
+    this.flatEntryZoom,
+    this.globeEntryZoom,
     this.transition = const Duration(milliseconds: 280),
     this.onTap,
     this.onSurfaceChanged,
@@ -70,6 +81,11 @@ class GoodMapGlobe extends StatefulWidget {
   /// Curve used when [resetToken] returns the globe camera to its initial state.
   final Curve cameraResetCurve;
 
+  /// Duration of the [resetToken] globe camera animation. Surface handoffs
+  /// always snap the globe camera instead, since they happen behind the
+  /// blackout.
+  final Duration cameraResetDuration;
+
   /// Custom markers (widgets, assets, or fallback dots) plotted on the map and globe.
   final List<MarkerOptions> markers;
 
@@ -100,13 +116,25 @@ class GoodMapGlobe extends StatefulWidget {
   final double globeZoomToFlat;
 
   /// Flat-map zoom below which it hands back to the globe.
-  final double flatZoomToGlobe;
+  ///
+  /// Defaults to the flat-map equivalent of [globeZoomToFlat] minus a small
+  /// hysteresis margin, so the two surfaces can't ping-pong at the boundary.
+  /// Set it explicitly only if you also set [flatEntryZoom]: the two live in
+  /// the same zoom space and an entry zoom below this threshold flips straight
+  /// back to the globe.
+  final double? flatZoomToGlobe;
 
   /// Flat-map zoom the map mounts at when entering from the globe.
-  final double flatEntryZoom;
+  ///
+  /// Defaults to the zoom whose ground scale matches the globe at the moment of
+  /// the handoff, which is what keeps the transition from jumping.
+  final double? flatEntryZoom;
 
   /// Globe zoom the globe mounts at when returning from the flat map.
-  final double globeEntryZoom;
+  ///
+  /// Defaults to the zoom whose ground scale matches the flat map at the moment
+  /// of the handoff.
+  final double? globeEntryZoom;
 
   /// Total duration of the fade-to-black surface transition.
   final Duration transition;
@@ -152,16 +180,37 @@ class GoodMapGlobe extends StatefulWidget {
 
 class _GoodMapGlobeState extends State<GoodMapGlobe>
     with SingleTickerProviderStateMixin {
+  /// Gap between the globe->flat threshold and the flat->globe threshold, in
+  /// flat-map zoom levels. Without it the matched entry zoom would sit right on
+  /// the return threshold and the surfaces would ping-pong.
+  static const double _handoffHysteresis = 0.6;
+
+  /// How long the blackout waits for the native map before giving up. Only hit
+  /// when the basemap style fails to load.
+  static const Duration _flatReadyTimeout = Duration(seconds: 4);
+
+  /// `onStyleLoaded` fires a beat before MapLibre's first composited frame
+  /// reaches the Flutter scene; revealing earlier shows a blank native view.
+  static const Duration _flatFirstFrameDelay = Duration(milliseconds: 120);
+
   late LatLng _center = widget.initialCenter;
   late double _globeStartZoom = widget.initialZoom;
+  late double _globeZoom = widget.initialZoom;
   late final AnimationController _surfaceTransition = AnimationController(
     vsync: this,
     duration: widget.transition,
   );
   int _globeCameraToken = 0;
   bool _globeCameraResetting = false;
+  bool _globeCameraSnap = false;
   bool _surfaceTransitionInProgress = false;
   bool _flat = false;
+
+  double _flatZoom = 0;
+  double _flatEntryZoom = 0;
+  double _flatReturnZoom = 0;
+  double _shortSide = 0;
+  Completer<void>? _flatReady;
 
   @override
   void didUpdateWidget(GoodMapGlobe oldWidget) {
@@ -173,14 +222,57 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
       _surfaceTransition.stop();
       _surfaceTransition.value = 0;
       _surfaceTransitionInProgress = false;
+      _flatReady = null;
       _center = widget.initialCenter;
       _globeStartZoom = widget.initialZoom;
+      _globeZoom = widget.initialZoom;
       _globeCameraResetting = true;
+      _globeCameraSnap = false;
       _globeCameraToken++;
       _flat = false;
       widget.onSurfaceChanged?.call(false);
     }
   }
+
+  // --- Zoom continuity ------------------------------------------------------
+
+  double get _viewportShortSide => _shortSide > 0 ? _shortSide : 400.0;
+
+  /// Flat-map zoom to mount at, matching the globe's current ground scale.
+  double _entryZoomForFlat() {
+    final explicit = widget.flatEntryZoom;
+    if (explicit != null) return explicit;
+    return flatZoomForGlobeZoom(
+      globeZoom: _globeZoom,
+      shortSide: _viewportShortSide,
+      latitude: _center.latitude,
+    ).clamp(0.0, 22.0);
+  }
+
+  /// Flat-map zoom below which the globe takes over again.
+  double _returnZoomForFlat() {
+    final explicit = widget.flatZoomToGlobe;
+    if (explicit != null) return explicit;
+    return flatZoomForGlobeZoom(
+          globeZoom: widget.globeZoomToFlat,
+          shortSide: _viewportShortSide,
+          latitude: _center.latitude,
+        ) -
+        _handoffHysteresis;
+  }
+
+  /// Globe zoom to return to, matching the flat map's current ground scale.
+  double _entryZoomForGlobe() {
+    final explicit = widget.globeEntryZoom;
+    if (explicit != null) return math.max(explicit, widget.minZoom);
+    return globeZoomForFlatZoom(
+      flatZoom: _flatZoom,
+      shortSide: _viewportShortSide,
+      latitude: _center.latitude,
+    ).clamp(widget.minZoom, 6.0);
+  }
+
+  // --- Surface handoff ------------------------------------------------------
 
   Future<void> _setFlat(bool flat) async {
     if (_flat == flat || _surfaceTransitionInProgress) return;
@@ -196,26 +288,64 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
     );
     if (!mounted) return;
 
+    if (flat) {
+      _flatEntryZoom = _entryZoomForFlat();
+      _flatReturnZoom = _returnZoomForFlat();
+      _flatZoom = _flatEntryZoom;
+      _flatReady = Completer<void>();
+    }
+
     setState(() {
       _flat = flat;
       if (!flat) {
-        _globeStartZoom = widget.globeEntryZoom;
+        _globeStartZoom = _entryZoomForGlobe();
         _globeCameraResetting = true;
+        _globeCameraSnap = true;
         _globeCameraToken++;
+        _flatReady = null;
       }
     });
     widget.onSurfaceChanged?.call(flat);
 
-    await WidgetsBinding.instance.endOfFrame;
-    if (!mounted) return;
+    // Hold the blackout until the incoming surface has really painted. The
+    // native map has to load its style and composite a first frame; the globe
+    // repaints synchronously and only needs the frame.
+    if (flat && !await _awaitFlatReady()) return;
+    if (!await _awaitFrame() || !await _awaitFrame()) return;
+
     await _surfaceTransition.animateBack(
       0,
       duration: phaseDuration,
       curve: Curves.easeOut,
     );
     if (mounted) {
-      setState(() => _surfaceTransitionInProgress = false);
+      setState(() {
+        _surfaceTransitionInProgress = false;
+        _globeCameraSnap = false;
+      });
     }
+  }
+
+  /// Waits for the native map's style, then for its first frame. Returns false
+  /// if the widget went away while waiting.
+  Future<bool> _awaitFlatReady() async {
+    final ready = _flatReady;
+    if (ready != null && !ready.isCompleted) {
+      await ready.future.timeout(_flatReadyTimeout, onTimeout: () {});
+      if (!mounted) return false;
+    }
+    await Future<void>.delayed(_flatFirstFrameDelay);
+    return mounted;
+  }
+
+  Future<bool> _awaitFrame() async {
+    await WidgetsBinding.instance.endOfFrame;
+    return mounted;
+  }
+
+  void _onFlatMapReady(GoodMapController controller) {
+    final ready = _flatReady;
+    if (ready != null && !ready.isCompleted) ready.complete();
   }
 
   @override
@@ -226,6 +356,10 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
 
   @override
   Widget build(BuildContext context) {
+    final waterColor =
+        widget.waterColor ??
+        _cartoGlobeWaterColor(Theme.of(context).brightness);
+
     final globe = GoodGlobe(
       key: const ValueKey('globe'),
       initialCenter: _center,
@@ -233,6 +367,8 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
       minZoom: widget.minZoom,
       resetToken: _globeCameraToken,
       cameraResetCurve: widget.cameraResetCurve,
+      cameraResetDuration:
+          _globeCameraSnap ? Duration.zero : widget.cameraResetDuration,
       markers: widget.markers,
       points: widget.points,
       popups: widget.popups,
@@ -253,56 +389,86 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
       onCameraResetEnd: () => _globeCameraResetting = false,
       onCameraChanged: (center, zoom) {
         _center = center;
+        _globeZoom = zoom;
         if (!_globeCameraResetting && zoom >= widget.globeZoomToFlat) {
           _setFlat(true);
         }
       },
     );
 
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        TickerMode(
-          enabled: !_flat,
-          child: IgnorePointer(ignoring: _flat, child: globe),
-        ),
-        IgnorePointer(
-          ignoring: !_flat,
-          child:
-              _flat
-                  ? GoodMap(
-                    key: const ValueKey('flat'),
-                    initialCenter: _center,
-                    initialZoom: widget.flatEntryZoom,
-                    controls: widget.controls,
-                    markers: widget.markers,
-                    popups: widget.popups,
-                    locale: widget.locale,
-                    waterColor:
-                        widget.waterColor ??
-                        _cartoGlobeWaterColor(Theme.of(context).brightness),
-                    basemapConfig: widget.basemapConfig,
-                    onBasemapError: widget.onBasemapError,
-                    onCameraChanged: (pos) {
-                      _center = pos.target;
-                      if (pos.zoom < widget.flatZoomToGlobe) {
-                        _setFlat(false);
-                      }
-                    },
-                  )
-                  : const SizedBox.expand(key: ValueKey('flat-placeholder')),
-        ),
-        IgnorePointer(
-          ignoring: !_surfaceTransitionInProgress,
-          child: FadeTransition(
-            opacity: _surfaceTransition,
-            child: const ColoredBox(
-              key: ValueKey('surface-transition-blackout'),
-              color: Colors.black,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth.isFinite && constraints.maxHeight.isFinite) {
+          _shortSide = math.min(constraints.maxWidth, constraints.maxHeight);
+        }
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            TickerMode(
+              enabled: !_flat,
+              child: IgnorePointer(
+                ignoring: _flat,
+                // Hidden rather than unmounted: the globe keeps its atlas and
+                // shader, and can't bleed through the native view before its
+                // first frame lands.
+                child: Visibility(
+                  visible: !_flat,
+                  maintainState: true,
+                  maintainAnimation: true,
+                  maintainSize: true,
+                  child: globe,
+                ),
+              ),
             ),
-          ),
-        ),
-      ],
+            IgnorePointer(
+              ignoring: !_flat,
+              child:
+                  _flat
+                      ? Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          // Opaque floor under the platform view so nothing
+                          // shows through while it composites its first frame.
+                          ColoredBox(color: waterColor),
+                          GoodMap(
+                            key: const ValueKey('flat'),
+                            initialCenter: _center,
+                            initialZoom: _flatEntryZoom,
+                            controls: widget.controls,
+                            markers: widget.markers,
+                            popups: widget.popups,
+                            locale: widget.locale,
+                            waterColor: waterColor,
+                            basemapConfig: widget.basemapConfig,
+                            onBasemapError: widget.onBasemapError,
+                            onMapReady: _onFlatMapReady,
+                            onCameraChanged: (pos) {
+                              _center = pos.target;
+                              _flatZoom = pos.zoom;
+                              if (pos.zoom < _flatReturnZoom) {
+                                _setFlat(false);
+                              }
+                            },
+                          ),
+                        ],
+                      )
+                      : const SizedBox.expand(
+                        key: ValueKey('flat-placeholder'),
+                      ),
+            ),
+            IgnorePointer(
+              ignoring: !_surfaceTransitionInProgress,
+              child: FadeTransition(
+                opacity: _surfaceTransition,
+                child: const ColoredBox(
+                  key: ValueKey('surface-transition-blackout'),
+                  color: Colors.black,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

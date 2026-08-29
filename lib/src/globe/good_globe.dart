@@ -26,6 +26,7 @@ class GoodGlobe extends StatefulWidget {
     this.minZoom = 0.0,
     this.resetToken = 0,
     this.cameraResetCurve = Curves.easeInOut,
+    this.cameraResetDuration = const Duration(milliseconds: 350),
     this.markers = const [],
     @Deprecated('Use markers instead') this.points = const [],
     this.arcs = const [],
@@ -65,6 +66,11 @@ class GoodGlobe extends StatefulWidget {
 
   /// Curve used when [resetToken] animates the camera back to its initial state.
   final Curve cameraResetCurve;
+
+  /// Duration of the [resetToken] camera animation. [Duration.zero] snaps the
+  /// camera in the same frame — used when the move happens behind a blackout
+  /// and any visible animation would read as a jump.
+  final Duration cameraResetDuration;
 
   /// Labelled points plotted on the globe.
   @Deprecated('Use markers instead')
@@ -229,7 +235,7 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
     );
     _cameraReset = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 350),
+      duration: widget.cameraResetDuration,
     )..addListener(_onCameraResetTick);
     _rotationX = widget.initialCenter.latitude * math.pi / 180.0;
     _rotationZ = widget.initialCenter.longitude * math.pi / 180.0;
@@ -421,13 +427,21 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
         (targetRotationZ - _rotationZ + math.pi) % (2 * math.pi) - math.pi;
     _resetEndRotationZ = _rotationZ + rotationDelta;
     _resetEndZoom = math.max(widget.initialZoom, widget.minZoom).toDouble();
+    if (widget.cameraResetDuration.inMicroseconds <= 0) {
+      // Snap: only ever called from didUpdateWidget, so a rebuild is already
+      // pending and setState would be redundant.
+      _cameraReset.stop();
+      _applyResetCamera(1.0, rebuild: false);
+      _scheduleLodDetails();
+      widget.onCameraResetEnd?.call();
+      return;
+    }
+    _cameraReset.duration = widget.cameraResetDuration;
     _cameraReset.forward(from: 0);
   }
 
-  void _onCameraResetTick() {
-    if (_cameraReset.value == 0) return;
-    final t = widget.cameraResetCurve.transform(_cameraReset.value);
-    setState(() {
+  void _applyResetCamera(double t, {bool rebuild = true}) {
+    void apply() {
       _rotationX =
           _resetStartRotationX +
           (_resetEndRotationX - _resetStartRotationX) * t;
@@ -435,8 +449,19 @@ class _GoodGlobeState extends State<GoodGlobe> with TickerProviderStateMixin {
           _resetStartRotationZ +
           (_resetEndRotationZ - _resetStartRotationZ) * t;
       _zoom = _resetStartZoom + (_resetEndZoom - _resetStartZoom) * t;
-    });
+    }
+
+    if (rebuild) {
+      setState(apply);
+    } else {
+      apply();
+    }
     widget.onCameraChanged?.call(_center, _zoom);
+  }
+
+  void _onCameraResetTick() {
+    if (_cameraReset.value == 0) return;
+    _applyResetCamera(widget.cameraResetCurve.transform(_cameraReset.value));
     if (_cameraReset.isCompleted) {
       _scheduleLodDetails();
       widget.onCameraResetEnd?.call();

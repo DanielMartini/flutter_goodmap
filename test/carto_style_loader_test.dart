@@ -101,6 +101,58 @@ void main() {
     },
   );
 
+  group('process-wide completed-style cache', () {
+    setUp(CartoStyleLoader.clearCompletedCache);
+    tearDown(CartoStyleLoader.clearCompletedCache);
+
+    const config = GoodBasemapConfig(cartoApiKey: 'key');
+
+    CartoStyleLoader loaderCounting(List<Uri> requests, {bool shared = true}) =>
+        CartoStyleLoader(
+          client: MockClient((request) async {
+            requests.add(request.url);
+            return http.Response(
+              '{"version":8,"sources":{},"layers":[]}',
+              200,
+            );
+          }),
+          shareCompleted: shared,
+        );
+
+    test('a second loader reuses a completed style instead of refetching', () async {
+      final requests = <Uri>[];
+      await loaderCounting(requests).load(Brightness.light, config);
+      expect(requests, hasLength(1));
+
+      // A remounted GoodMap builds a fresh loader — the globe -> flat handoff
+      // does this on every pass and must not pay for the style again.
+      await loaderCounting(requests).load(Brightness.light, config);
+      expect(requests, hasLength(1));
+    });
+
+    test('failures are not cached', () async {
+      final failing = CartoStyleLoader(
+        client: MockClient((_) async => http.Response('nope', 500)),
+        shareCompleted: true,
+      );
+      await expectLater(
+        failing.load(Brightness.light, config),
+        throwsA(isA<CartoStyleLoadException>()),
+      );
+
+      final requests = <Uri>[];
+      await loaderCounting(requests).load(Brightness.light, config);
+      expect(requests, hasLength(1));
+    });
+
+    test('loaders opt out of the shared cache by default', () async {
+      final requests = <Uri>[];
+      await loaderCounting(requests, shared: false).load(Brightness.light, config);
+      await loaderCounting(requests, shared: false).load(Brightness.light, config);
+      expect(requests, hasLength(2));
+    });
+  });
+
   test('concurrent identical loads share the same cached future', () {
     final client = MockClient(
       (_) async => http.Response('{"version":8,"sources":{},"layers":[]}', 200),

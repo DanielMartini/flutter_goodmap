@@ -114,3 +114,40 @@ class SphereProjection {
 /// Diameter is 75% of the short side at zoom 1, doubling each zoom level.
 double globeRadius(double zoom, double shortSide) =>
     shortSide * 0.375 * math.pow(2.0, zoom - 1.0);
+
+/// Tile size (logical px) behind MapLibre's Web-Mercator zoom definition:
+/// the world is `512 * 2^zoom` pixels wide.
+const double kMercatorTileSize = 512.0;
+
+/// Flat-map (Web-Mercator) zoom whose on-screen ground scale matches the globe
+/// drawn at [globeZoom] in a viewport whose short side is [shortSide] logical
+/// pixels, for a camera centred on [latitude].
+///
+/// The orthographic globe shows `radius / earthRadius` pixels per metre at the
+/// point facing the viewer; Mercator shows `512 * 2^zoom / (2π · earthRadius ·
+/// cos(lat))`. Equating the two and solving for the zoom keeps the ground under
+/// the centre of the screen the same size across the globe -> flat handoff.
+double flatZoomForGlobeZoom({
+  required double globeZoom,
+  required double shortSide,
+  double latitude = 0,
+}) {
+  final radius = globeRadius(globeZoom, math.max(shortSide, 1.0));
+  return math.log(2 * math.pi * radius * _cosLat(latitude) / kMercatorTileSize) /
+      math.ln2;
+}
+
+/// Inverse of [flatZoomForGlobeZoom]: the globe zoom matching a flat map drawn
+/// at [flatZoom].
+double globeZoomForFlatZoom({
+  required double flatZoom,
+  required double shortSide,
+  double latitude = 0,
+}) {
+  final radius =
+      math.pow(2.0, flatZoom) * kMercatorTileSize / (2 * math.pi * _cosLat(latitude));
+  return math.log(radius / (math.max(shortSide, 1.0) * 0.375)) / math.ln2 + 1.0;
+}
+
+double _cosLat(double latitude) =>
+    math.cos(latitude.clamp(-85.0, 85.0) * math.pi / 180.0);
