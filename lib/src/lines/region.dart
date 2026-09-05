@@ -1,6 +1,11 @@
 import 'package:flutter/widgets.dart';
 import 'package:maplibre_gl/maplibre_gl.dart' show LatLng;
 
+enum GoodMapRegionState { loading, ready, error }
+
+typedef GoodMapRegionStateChanged =
+    void Function(Object? token, GoodMapRegionState state);
+
 /// One polygon part of a declarative map region.
 @immutable
 class GoodMapRegionPolygon {

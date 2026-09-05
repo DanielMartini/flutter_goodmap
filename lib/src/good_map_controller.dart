@@ -1,4 +1,5 @@
 // lib/src/good_map_controller.dart
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show rootBundle;
@@ -152,6 +153,14 @@ class GoodMapController extends ChangeNotifier {
   /// Overlay-widget markers and popups need no re-application — they are
   /// Flutter widgets, not part of the GL scene.
   void reapplyGlObjects() {
+    unawaited(reapplyGlObjectsAndWait());
+  }
+
+  /// Re-applies native objects and waits for polygon fills to complete.
+  ///
+  /// The synchronous method above remains the backwards-compatible public
+  /// entry point for callers that do not need completion semantics.
+  Future<void> reapplyGlObjectsAndWait() async {
     _symbols.clear();
     _markerCircles.clear();
     _markerCircleIds.clear();
@@ -172,7 +181,7 @@ class GoodMapController extends ChangeNotifier {
     }
     _fills.clear();
     for (final entry in _polygons.items.entries) {
-      _createFill(entry.key, entry.value);
+      await _createFill(entry.key, entry.value);
     }
     _circleFills.clear();
     for (final entry in _circles.items.entries) {
@@ -459,9 +468,15 @@ class GoodMapController extends ChangeNotifier {
 
   /// Removes a polygon. Unknown [id] is a no-op.
   void removePolygon(PolygonId id) {
+    unawaited(removePolygonAsync(id));
+  }
+
+  /// Removes a polygon and waits for its native fill to be detached.
+  Future<void> removePolygonAsync(PolygonId id) async {
     if (!_polygons.items.containsKey(id.value)) return;
     _polygons.remove(id.value);
-    _disposeFill(id.value);
+    final fill = _fills.remove(id.value);
+    if (fill != null) await _native.removeFill(fill);
   }
 
   /// Removes all polygons.
@@ -474,27 +489,28 @@ class GoodMapController extends ChangeNotifier {
   }
 
   Future<void> _createFill(int id, PolygonOptions options) async {
-    final geometry = <List<LatLng>>[
-      for (final ring in options.rings) _closeRing(ring),
-    ];
-    final Fill fill = await _native.addFill(
-      FillOptions(
-        geometry: geometry,
-        fillColor: options.color.toHexStringRGB(),
-        fillOpacity: options.opacity,
-        fillOutlineColor: options.outlineColor?.toHexStringRGB(),
-      ),
-    );
-    if (!_polygons.items.containsKey(id)) {
-      await _native.removeFill(fill);
-      return;
+    try {
+      final geometry = <List<LatLng>>[
+        for (final ring in options.rings) _closeRing(ring),
+      ];
+      final Fill fill = await _native.addFill(
+        FillOptions(
+          geometry: geometry,
+          fillColor: options.color.toHexStringRGB(),
+          fillOpacity: options.opacity,
+          fillOutlineColor: options.outlineColor?.toHexStringRGB(),
+        ),
+      );
+      if (!_polygons.items.containsKey(id)) {
+        await _native.removeFill(fill);
+        return;
+      }
+      _fills[id] = fill;
+    } catch (_) {
+      _polygons.remove(id);
+      _fills.remove(id);
+      rethrow;
     }
-    _fills[id] = fill;
-  }
-
-  void _disposeFill(int id) {
-    final fill = _fills.remove(id);
-    if (fill != null) _native.removeFill(fill);
   }
 
   // --- Circles (area) -----------------------------------------------------

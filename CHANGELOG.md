@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.1
+
+### Declarative regions
+
+- Added loading/ready/error callbacks for current region-fill application.
+- Fixed stale region synchronization cleanup and native polygon registry recovery after fill failures.
+- Awaited region fill reapplication after native style reloads.
+
+### Hybrid (`GoodMapGlobe`)
+
+- Region readiness now waits for current fills, flat-surface transition and bounds fitting for the same focus token.
+- Serialized region camera focus and restoration to ignore obsolete selections.
+
 ## 0.7.0
 
 ### Declarative regions

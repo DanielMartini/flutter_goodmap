@@ -50,6 +50,7 @@ void main() {
     final native = MockMapLibreMapController();
     _stubNative(native);
     final surfaces = <bool>[];
+    final regionStates = <String>[];
     final mapBuilder = testMapBuilder(native);
 
     Widget build({required List<GoodMapRegionOptions> regions, Object? token}) {
@@ -60,6 +61,9 @@ void main() {
           regions: regions,
           focusBounds: regions.isEmpty ? null : _bounds,
           focusToken: token,
+          onRegionStateChanged:
+              (callbackToken, state) =>
+                  regionStates.add('$callbackToken:${state.name}'),
           transition: Duration.zero,
           onSurfaceChanged: surfaces.add,
           mapBuilder: mapBuilder,
@@ -77,6 +81,8 @@ void main() {
       () => native.addFill(any()),
       () => native.animateCamera(any()),
     ]);
+    expect(regionStates, contains('v1:loading'));
+    expect(regionStates, contains('v1:ready'));
 
     await tester.pumpWidget(build(regions: [_region], token: 'v1'));
     await tester.pumpAndSettle();
@@ -85,6 +91,8 @@ void main() {
     await tester.pumpWidget(build(regions: [_region], token: 'v2'));
     await tester.pumpAndSettle();
     verify(() => native.animateCamera(any())).called(1);
+    expect(regionStates, contains('v2:loading'));
+    expect(regionStates, contains('v2:ready'));
 
     await tester.pumpWidget(build(regions: const []));
     await tester.pumpAndSettle();

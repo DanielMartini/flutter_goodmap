@@ -55,6 +55,7 @@ class GoodMapGlobe extends StatefulWidget {
     this.transition = const Duration(milliseconds: 280),
     this.onTap,
     this.onSurfaceChanged,
+    this.onRegionStateChanged,
     this.showDottedGrid = false,
     this.dottedGridColor,
     this.dottedGridRadius = 1.2,
@@ -162,6 +163,10 @@ class GoodMapGlobe extends StatefulWidget {
   /// Called when the surface flips (true = flat map, false = globe).
   final void Function(bool isFlat)? onSurfaceChanged;
 
+  /// Reports native regional map readiness for the current [focusToken].
+  /// A panel using the region must wait for [GoodMapRegionState.ready].
+  final GoodMapRegionStateChanged? onRegionStateChanged;
+
   /// When true, draws the dotted world landmass grid on the globe surface.
   final bool showDottedGrid;
 
@@ -240,6 +245,11 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
   int _regionModeGeneration = 0;
   Object? _lastFocusToken;
   bool _hasFocusedRegion = false;
+  Future<void> _regionCameraOperation = Future<void>.value();
+  Object? _flatRegionReadyToken;
+  int? _flatRegionReadyGeneration;
+  Object? _regionReadyToken;
+  int? _regionReadyGeneration;
 
   @override
   void initState() {
@@ -282,41 +292,77 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
       unawaited(_exitRegionMode());
     } else if (hasRegions &&
         (oldWidget.focusToken != widget.focusToken ||
-            oldWidget.focusBounds != widget.focusBounds)) {
-      unawaited(_focusRegion());
+            !_sameBounds(oldWidget.focusBounds, widget.focusBounds) ||
+            oldWidget.focusPadding != widget.focusPadding)) {
+      final generation = ++_regionModeGeneration;
+      _hasFocusedRegion = false;
+      _lastFocusToken = null;
+      _flatRegionReadyGeneration = null;
+      _flatRegionReadyToken = null;
+      _regionReadyGeneration = null;
+      _regionReadyToken = null;
+      widget.onRegionStateChanged?.call(
+        widget.focusToken,
+        GoodMapRegionState.loading,
+      );
+      unawaited(_focusRegion(generation: generation, token: widget.focusToken));
     }
   }
 
   Future<void> _enterRegionMode() async {
     final generation = ++_regionModeGeneration;
+    final token = widget.focusToken;
+    widget.onRegionStateChanged?.call(token, GoodMapRegionState.loading);
     _regionRestoreFlat ??= _flat;
     _regionRestoreCenter ??= _center;
     _regionRestoreGlobeZoom ??= _globeZoom;
     _regionRestoreFlatZoom ??= _flatZoom;
     _hasFocusedRegion = false;
     _lastFocusToken = null;
+    _flatRegionReadyGeneration = null;
+    _flatRegionReadyToken = null;
+    _regionReadyGeneration = null;
+    _regionReadyToken = null;
 
     while (mounted && _surfaceTransitionInProgress) {
       await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || generation != _regionModeGeneration) return;
     }
     if (!mounted ||
         generation != _regionModeGeneration ||
-        widget.regions.isEmpty) {
+        widget.regions.isEmpty ||
+        widget.focusToken != token) {
       return;
     }
-    if (!_flat) await _setFlat(true);
+    if (!_flat) {
+      await _setFlat(true, generation: generation);
+      if (!mounted || generation != _regionModeGeneration) return;
+    }
     if (!mounted ||
         generation != _regionModeGeneration ||
-        widget.regions.isEmpty) {
+        widget.regions.isEmpty ||
+        widget.focusToken != token) {
       return;
     }
-    await _focusRegion();
+    await _focusRegion(generation: generation, token: token);
+    await _maybeCompleteRegionReady(generation: generation, token: token);
   }
 
   Future<void> _exitRegionMode() async {
     final generation = ++_regionModeGeneration;
     _hasFocusedRegion = false;
     _lastFocusToken = null;
+    _flatRegionReadyGeneration = null;
+    _flatRegionReadyToken = null;
+    _regionReadyGeneration = null;
+    _regionReadyToken = null;
+
+    while (mounted && _surfaceTransitionInProgress) {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || generation != _regionModeGeneration) return;
+    }
+    await _regionCameraOperation;
+    if (!mounted || generation != _regionModeGeneration) return;
 
     // Let the mounted GoodMap receive the empty region list and synchronously
     // remove its fills before restoring the previous surface and camera.
@@ -341,6 +387,11 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
         widget.onSurfaceChanged?.call(true);
       }
       await _flatController?.moveTo(restoreCenter, zoom: restoreFlatZoom);
+      if (!mounted ||
+          generation != _regionModeGeneration ||
+          widget.regions.isNotEmpty) {
+        return;
+      }
     } else {
       _surfaceTransition.stop();
       _surfaceTransition.value = 0;
@@ -349,7 +400,6 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
         _surfaceTransitionInProgress = false;
         _center = restoreCenter;
         _globeStartZoom = restoreGlobeZoom;
-        _globeZoom = restoreGlobeZoom;
         _globeCameraResetting = true;
         _globeCameraSnap = true;
         _globeCameraToken++;
@@ -360,25 +410,141 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
       if (surfaceChanged) widget.onSurfaceChanged?.call(false);
     }
 
+    if (!mounted || generation != _regionModeGeneration) return;
     _regionRestoreFlat = null;
     _regionRestoreCenter = null;
     _regionRestoreGlobeZoom = null;
     _regionRestoreFlatZoom = null;
   }
 
-  Future<void> _focusRegion() async {
+  Future<bool> _focusRegion({required int generation, required Object? token}) {
+    final operation = _regionCameraOperation.then<bool>(
+      (_) => _performFocusRegion(generation: generation, token: token),
+    );
+    _regionCameraOperation = operation.then<void>((_) {}).catchError((_) {});
+    return operation;
+  }
+
+  bool _sameBounds(LatLngBounds? first, LatLngBounds? second) {
+    if (identical(first, second)) return true;
+    if (first == null || second == null) return false;
+    return first.southwest.latitude == second.southwest.latitude &&
+        first.southwest.longitude == second.southwest.longitude &&
+        first.northeast.latitude == second.northeast.latitude &&
+        first.northeast.longitude == second.northeast.longitude;
+  }
+
+  Future<bool> _performFocusRegion({
+    required int generation,
+    required Object? token,
+  }) async {
     final controller = _flatController;
     final bounds = widget.focusBounds;
+    final padding = widget.focusPadding;
     if (!_flat ||
         widget.regions.isEmpty ||
         controller == null ||
-        bounds == null) {
+        bounds == null ||
+        token != widget.focusToken) {
+      return false;
+    }
+    if (_hasFocusedRegion &&
+        _lastFocusToken == token &&
+        _sameBounds(bounds, widget.focusBounds) &&
+        padding == widget.focusPadding) {
+      return true;
+    }
+    try {
+      await controller.fitBounds(bounds, padding: padding);
+      if (!mounted ||
+          generation != _regionModeGeneration ||
+          widget.regions.isEmpty ||
+          token != widget.focusToken ||
+          !_sameBounds(bounds, widget.focusBounds) ||
+          padding != widget.focusPadding ||
+          controller != _flatController) {
+        return false;
+      }
+      _hasFocusedRegion = true;
+      _lastFocusToken = token;
+      return true;
+    } catch (error) {
+      if (mounted &&
+          generation == _regionModeGeneration &&
+          widget.regions.isNotEmpty &&
+          token == widget.focusToken) {
+        widget.onRegionStateChanged?.call(token, GoodMapRegionState.error);
+      }
+      return false;
+    }
+  }
+
+  void _onFlatRegionState(
+    int generation,
+    Object? token,
+    GoodMapRegionState state,
+  ) {
+    if (!mounted ||
+        generation != _regionModeGeneration ||
+        widget.regions.isEmpty ||
+        token != widget.focusToken) {
       return;
     }
-    if (_hasFocusedRegion && _lastFocusToken == widget.focusToken) return;
-    _hasFocusedRegion = true;
-    _lastFocusToken = widget.focusToken;
-    await controller.fitBounds(bounds, padding: widget.focusPadding);
+    if (state == GoodMapRegionState.loading) {
+      _flatRegionReadyGeneration = null;
+      _flatRegionReadyToken = null;
+      widget.onRegionStateChanged?.call(token, state);
+      return;
+    }
+    if (state == GoodMapRegionState.error) {
+      _flatRegionReadyGeneration = null;
+      _flatRegionReadyToken = null;
+      widget.onRegionStateChanged?.call(token, state);
+      return;
+    }
+    _flatRegionReadyGeneration = generation;
+    _flatRegionReadyToken = token;
+    unawaited(_maybeCompleteRegionReady(generation: generation, token: token));
+  }
+
+  Future<void> _maybeCompleteRegionReady({
+    required int generation,
+    required Object? token,
+  }) async {
+    if (!mounted ||
+        generation != _regionModeGeneration ||
+        widget.regions.isEmpty ||
+        token != widget.focusToken ||
+        _flatRegionReadyGeneration != generation ||
+        _flatRegionReadyToken != token) {
+      return;
+    }
+    while (mounted && _surfaceTransitionInProgress) {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted ||
+          generation != _regionModeGeneration ||
+          widget.regions.isEmpty ||
+          token != widget.focusToken) {
+        return;
+      }
+    }
+    final focused = await _focusRegion(generation: generation, token: token);
+    if (!focused ||
+        !mounted ||
+        generation != _regionModeGeneration ||
+        widget.regions.isEmpty ||
+        token != widget.focusToken ||
+        _surfaceTransitionInProgress ||
+        _flatRegionReadyGeneration != generation ||
+        _flatRegionReadyToken != token) {
+      return;
+    }
+    if (_regionReadyGeneration == generation && _regionReadyToken == token) {
+      return;
+    }
+    _regionReadyGeneration = generation;
+    _regionReadyToken = token;
+    widget.onRegionStateChanged?.call(token, GoodMapRegionState.ready);
   }
 
   // --- Zoom continuity ------------------------------------------------------
@@ -421,7 +587,8 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
 
   // --- Surface handoff ------------------------------------------------------
 
-  Future<void> _setFlat(bool flat) async {
+  Future<void> _setFlat(bool flat, {int? generation}) async {
+    final operationGeneration = generation ?? _regionModeGeneration;
     if (_flat == flat || _surfaceTransitionInProgress) return;
     setState(() => _surfaceTransitionInProgress = true);
 
@@ -433,7 +600,7 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
       duration: phaseDuration,
       curve: Curves.easeIn,
     );
-    if (!mounted) return;
+    if (!_isCurrentSurfaceOperation(operationGeneration)) return;
 
     if (flat) {
       _flatEntryZoom = _entryZoomForFlat();
@@ -457,20 +624,41 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
     // Hold the blackout until the incoming surface has really painted. The
     // native map has to load its style and composite a first frame; the globe
     // repaints synchronously and only needs the frame.
-    if (flat && !await _awaitFlatReady()) return;
-    if (!await _awaitFrame() || !await _awaitFrame()) return;
+    if (flat) {
+      final flatReady = await _awaitFlatReady();
+      if (!flatReady || !_isCurrentSurfaceOperation(operationGeneration)) {
+        return;
+      }
+    }
+    final firstFrame = await _awaitFrame();
+    if (!firstFrame || !_isCurrentSurfaceOperation(operationGeneration)) {
+      return;
+    }
+    final secondFrame = await _awaitFrame();
+    if (!secondFrame || !_isCurrentSurfaceOperation(operationGeneration)) {
+      return;
+    }
 
     await _surfaceTransition.animateBack(
       0,
       duration: phaseDuration,
       curve: Curves.easeOut,
     );
-    if (mounted) {
+    if (_isCurrentSurfaceOperation(operationGeneration)) {
       setState(() {
         _surfaceTransitionInProgress = false;
         _globeCameraSnap = false;
       });
     }
+  }
+
+  bool _isCurrentSurfaceOperation(int generation) {
+    if (!mounted) return false;
+    if (generation == _regionModeGeneration) return true;
+    _surfaceTransition.stop();
+    _surfaceTransition.value = 0;
+    _surfaceTransitionInProgress = false;
+    return false;
   }
 
   /// Waits for the native map's style, then for its first frame. Returns false
@@ -494,7 +682,24 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
     _flatController = controller;
     final ready = _flatReady;
     if (ready != null && !ready.isCompleted) ready.complete();
-    unawaited(_focusRegion());
+    if (widget.regions.isNotEmpty) {
+      unawaited(
+        _maybeCompleteRegionReady(
+          generation: _regionModeGeneration,
+          token: widget.focusToken,
+        ),
+      );
+    }
+  }
+
+  void _onBasemapError(Object error) {
+    widget.onBasemapError?.call(error);
+    if (widget.regions.isNotEmpty) {
+      widget.onRegionStateChanged?.call(
+        widget.focusToken,
+        GoodMapRegionState.error,
+      );
+    }
   }
 
   @override
@@ -534,7 +739,7 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
       sunPosition: widget.sunPosition,
       timeRange: widget.timeRange,
       basemapConfig: widget.basemapConfig,
-      onBasemapError: widget.onBasemapError,
+      onBasemapError: _onBasemapError,
       onCameraResetEnd: () => _globeCameraResetting = false,
       onCameraChanged: (center, zoom) {
         _center = center;
@@ -544,6 +749,7 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
         }
       },
     );
+    final regionGeneration = _regionModeGeneration;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -587,11 +793,18 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
                             markers: widget.markers,
                             popups: widget.popups,
                             regions: widget.regions,
+                            regionsToken: widget.focusToken,
+                            onRegionStateChanged:
+                                (token, state) => _onFlatRegionState(
+                                  regionGeneration,
+                                  token,
+                                  state,
+                                ),
                             locale: widget.locale,
                             waterColor:
                                 widget.mapBuilder == null ? waterColor : null,
                             basemapConfig: widget.basemapConfig,
-                            onBasemapError: widget.onBasemapError,
+                            onBasemapError: _onBasemapError,
                             mapBuilder: widget.mapBuilder,
                             onMapReady: _onFlatMapReady,
                             onCameraChanged: (pos) {

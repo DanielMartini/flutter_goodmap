@@ -49,11 +49,18 @@ void _stubNative(MockMapLibreMapController native) {
   when(() => native.removeFill(any())).thenAnswer((_) async {});
 }
 
-Widget _map(GoodMapBuilder builder, List<GoodMapRegionOptions> regions) {
+Widget _map(
+  GoodMapBuilder builder,
+  List<GoodMapRegionOptions> regions, {
+  Object? token,
+  GoodMapRegionStateChanged? onRegionStateChanged,
+}) {
   return MaterialApp(
     home: GoodMap(
       initialCenter: const LatLng(0, 0),
       regions: regions,
+      regionsToken: token,
+      onRegionStateChanged: onRegionStateChanged,
       mapBuilder: builder,
     ),
   );
@@ -100,6 +107,45 @@ void main() {
     expect(first.fillOutlineColor, '#000000');
   });
 
+  testWidgets('reports ready only after every current fill is acknowledged', (
+    tester,
+  ) async {
+    final native = MockMapLibreMapController();
+    final first = Completer<Fill>();
+    final second = Completer<Fill>();
+    var addCount = 0;
+    when(
+      () => native.toScreenLocation(any()),
+    ).thenAnswer((_) async => const Point<num>(0, 0));
+    when(() => native.addFill(any())).thenAnswer((_) {
+      addCount++;
+      return addCount == 1 ? first.future : second.future;
+    });
+    when(() => native.removeFill(any())).thenAnswer((_) async {});
+    final states = <String>[];
+    final builder = testMapBuilder(native);
+
+    await tester.pumpWidget(
+      _map(
+        builder,
+        [_region(multipleParts: true)],
+        token: 'selection-a',
+        onRegionStateChanged:
+            (token, state) => states.add('$token:${state.name}'),
+      ),
+    );
+    await tester.pump();
+    expect(states, ['selection-a:loading']);
+
+    first.complete(_FakeFill());
+    await tester.pump();
+    expect(states, ['selection-a:loading']);
+
+    second.complete(_FakeFill());
+    await tester.pumpAndSettle();
+    expect(states, ['selection-a:loading', 'selection-a:ready']);
+  });
+
   testWidgets('diffs replacements and clearing by stable part id', (
     tester,
   ) async {
@@ -137,16 +183,34 @@ void main() {
     when(() => native.addFill(any())).thenAnswer((_) => pending.future);
     when(() => native.removeFill(any())).thenAnswer((_) async {});
     final builder = testMapBuilder(native);
+    final states = <String>[];
 
-    await tester.pumpWidget(_map(builder, [_region()]));
+    await tester.pumpWidget(
+      _map(
+        builder,
+        [_region(multipleParts: true)],
+        token: 'stale-selection',
+        onRegionStateChanged:
+            (token, state) => states.add('$token:${state.name}'),
+      ),
+    );
     await tester.pump();
-    await tester.pumpWidget(_map(builder, const []));
+    await tester.pumpWidget(
+      _map(
+        builder,
+        const [],
+        onRegionStateChanged:
+            (token, state) => states.add('$token:${state.name}'),
+      ),
+    );
     await tester.pump();
 
     pending.complete(_FakeFill());
     await tester.pumpAndSettle();
 
     verify(() => native.removeFill(any())).called(1);
+    verify(() => native.addFill(any())).called(1);
+    expect(states, ['stale-selection:loading']);
   });
 
   testWidgets('reapplies declarative regions after style reload', (
@@ -156,6 +220,7 @@ void main() {
     _stubNative(native);
     late void Function() reloadStyle;
     var mapCreated = false;
+    final states = <String>[];
 
     Widget builder({
       required String styleString,
@@ -180,16 +245,22 @@ void main() {
         home: GoodMap(
           initialCenter: const LatLng(0, 0),
           regions: [_region()],
+          regionsToken: 'style-selection',
+          onRegionStateChanged:
+              (token, state) => states.add('$token:${state.name}'),
           mapBuilder: builder,
         ),
       ),
     );
     await tester.pumpAndSettle();
     verify(() => native.addFill(any())).called(1);
+    expect(states, ['style-selection:loading', 'style-selection:ready']);
 
+    states.clear();
     reloadStyle();
     await tester.pumpAndSettle();
 
     verify(() => native.addFill(any())).called(1);
+    expect(states, ['style-selection:loading', 'style-selection:ready']);
   });
 }

@@ -32,6 +32,8 @@ class GoodMap extends StatefulWidget {
     required this.initialCenter,
     this.onMapReady,
     this.onCameraChanged,
+    this.regionsToken,
+    this.onRegionStateChanged,
     this.initialZoom = 11,
     this.controls = const GoodControls(),
     this.theme,
@@ -54,6 +56,8 @@ class GoodMap extends StatefulWidget {
   final List<MarkerOptions> markers;
   final List<PopupOptions> popups;
   final List<GoodMapRegionOptions> regions;
+  final Object? regionsToken;
+  final GoodMapRegionStateChanged? onRegionStateChanged;
 
   /// Locale used for CARTO vector labels.
   ///
@@ -150,31 +154,64 @@ class _GoodMapState extends State<GoodMap> {
     }
 
     final generation = ++_regionSyncGeneration;
+    final token = widget.regionsToken;
+    final added = <String, PolygonId>{};
     _desiredRegionParts = desired;
 
-    for (final entry in _declarativeRegionParts.entries.toList()) {
-      final next = desired[entry.key];
-      if (next == null || !_samePolygonOptions(entry.value.options, next)) {
-        c.removePolygon(entry.value.id);
+    try {
+      for (final entry in _declarativeRegionParts.entries.toList()) {
+        final next = desired[entry.key];
+        if (next == null || !_samePolygonOptions(entry.value.options, next)) {
+          await c.removePolygonAsync(entry.value.id);
+          _declarativeRegionParts.remove(entry.key);
+        }
+      }
+
+      if (desired.isNotEmpty) {
+        widget.onRegionStateChanged?.call(token, GoodMapRegionState.loading);
+      }
+
+      for (final entry in desired.entries) {
+        if (!mounted ||
+            generation != _regionSyncGeneration ||
+            widget.regionsToken != token) {
+          return;
+        }
+        if (_declarativeRegionParts.containsKey(entry.key)) continue;
+        final id = await c.addPolygonAsync(entry.value);
+        final current = _desiredRegionParts[entry.key];
+        if (!mounted ||
+            generation != _regionSyncGeneration ||
+            widget.regionsToken != token ||
+            current == null ||
+            !_samePolygonOptions(current, entry.value)) {
+          await c.removePolygonAsync(id);
+          return;
+        }
+        _declarativeRegionParts[entry.key] = _DeclarativeRegionPart(
+          id,
+          entry.value,
+        );
+        added[entry.key] = id;
+      }
+
+      if (desired.isNotEmpty &&
+          mounted &&
+          generation == _regionSyncGeneration &&
+          widget.regionsToken == token) {
+        widget.onRegionStateChanged?.call(token, GoodMapRegionState.ready);
+      }
+    } catch (error) {
+      for (final entry in added.entries) {
+        await c.removePolygonAsync(entry.value);
         _declarativeRegionParts.remove(entry.key);
       }
-    }
-
-    for (final entry in desired.entries) {
-      if (_declarativeRegionParts.containsKey(entry.key)) continue;
-      final id = await c.addPolygonAsync(entry.value);
-      final current = _desiredRegionParts[entry.key];
-      if (!mounted ||
-          generation != _regionSyncGeneration ||
-          current == null ||
-          !_samePolygonOptions(current, entry.value)) {
-        c.removePolygon(id);
-        continue;
+      if (mounted &&
+          generation == _regionSyncGeneration &&
+          widget.regionsToken == token &&
+          desired.isNotEmpty) {
+        widget.onRegionStateChanged?.call(token, GoodMapRegionState.error);
       }
-      _declarativeRegionParts[entry.key] = _DeclarativeRegionPart(
-        id,
-        entry.value,
-      );
     }
   }
 
@@ -226,9 +263,29 @@ class _GoodMapState extends State<GoodMap> {
       if (!mounted) return;
       widget.onMapReady?.call(_controller!);
     } else {
-      // Theme changed mid-session: GL-scene objects (symbols + lines) must be
-      // re-applied to the new style.
-      _controller!.reapplyGlObjects();
+      final token = widget.regionsToken;
+      final generation = ++_regionSyncGeneration;
+      final hasRegions = widget.regions.isNotEmpty;
+      if (hasRegions) {
+        widget.onRegionStateChanged?.call(token, GoodMapRegionState.loading);
+      }
+      try {
+        await _controller!.reapplyGlObjectsAndWait();
+        if (!mounted ||
+            generation != _regionSyncGeneration ||
+            widget.regionsToken != token ||
+            !hasRegions) {
+          return;
+        }
+        widget.onRegionStateChanged?.call(token, GoodMapRegionState.ready);
+      } catch (error) {
+        if (mounted &&
+            generation == _regionSyncGeneration &&
+            widget.regionsToken == token &&
+            hasRegions) {
+          widget.onRegionStateChanged?.call(token, GoodMapRegionState.error);
+        }
+      }
     }
   }
 
@@ -252,7 +309,8 @@ class _GoodMapState extends State<GoodMap> {
       if (oldWidget.popups != widget.popups) {
         _syncPopups();
       }
-      if (oldWidget.regions != widget.regions) {
+      if (oldWidget.regions != widget.regions ||
+          oldWidget.regionsToken != widget.regionsToken) {
         unawaited(_syncRegions());
       }
     }
