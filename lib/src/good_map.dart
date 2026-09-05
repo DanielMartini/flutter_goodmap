@@ -1,10 +1,13 @@
 // lib/src/good_map.dart
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:maplibre_gl/maplibre_gl.dart';
 
 import 'controls/controls.dart';
 import 'good_map_controller.dart';
+import 'lines/region.dart';
 import 'popups/popup_layer.dart';
 import 'theme/basemaps.dart';
 import 'theme/carto_basemap_config.dart';
@@ -34,11 +37,12 @@ class GoodMap extends StatefulWidget {
     this.theme,
     this.markers = const [],
     this.popups = const [],
+    this.regions = const [],
     this.locale,
     this.waterColor,
     this.basemapConfig,
     this.onBasemapError,
-    @visibleForTesting this.mapBuilder = _defaultMapBuilder,
+    this.mapBuilder,
     super.key,
   });
 
@@ -49,6 +53,7 @@ class GoodMap extends StatefulWidget {
   final void Function(GoodMapController)? onMapReady;
   final List<MarkerOptions> markers;
   final List<PopupOptions> popups;
+  final List<GoodMapRegionOptions> regions;
 
   /// Locale used for CARTO vector labels.
   ///
@@ -64,10 +69,17 @@ class GoodMap extends StatefulWidget {
 
   /// Called on camera moves with the current position (target + zoom).
   final void Function(CameraPosition)? onCameraChanged;
-  final GoodMapBuilder mapBuilder;
+  final GoodMapBuilder? mapBuilder;
 
   @override
   State<GoodMap> createState() => _GoodMapState();
+}
+
+class _DeclarativeRegionPart {
+  const _DeclarativeRegionPart(this.id, this.options);
+
+  final PolygonId id;
+  final PolygonOptions options;
 }
 
 class _GoodMapState extends State<GoodMap> {
@@ -85,6 +97,9 @@ class _GoodMapState extends State<GoodMap> {
 
   final Set<MarkerId> _declarativeMarkerIds = {};
   final Set<PopupId> _declarativePopupIds = {};
+  final Map<String, _DeclarativeRegionPart> _declarativeRegionParts = {};
+  Map<String, PolygonOptions> _desiredRegionParts = const {};
+  int _regionSyncGeneration = 0;
 
   void _syncMarkers() {
     final c = _controller;
@@ -116,6 +131,82 @@ class _GoodMapState extends State<GoodMap> {
     }
   }
 
+  Future<void> _syncRegions() async {
+    final c = _controller;
+    if (c == null) return;
+
+    final desired = <String, PolygonOptions>{};
+    for (final region in widget.regions) {
+      for (var index = 0; index < region.polygons.length; index++) {
+        final polygon = region.polygons[index];
+        desired['${region.id}:$index'] = PolygonOptions(
+          points: polygon.outerRing,
+          holes: polygon.holes,
+          color: region.fillColor,
+          opacity: region.fillOpacity,
+          outlineColor: region.outlineColor,
+        );
+      }
+    }
+
+    final generation = ++_regionSyncGeneration;
+    _desiredRegionParts = desired;
+
+    for (final entry in _declarativeRegionParts.entries.toList()) {
+      final next = desired[entry.key];
+      if (next == null || !_samePolygonOptions(entry.value.options, next)) {
+        c.removePolygon(entry.value.id);
+        _declarativeRegionParts.remove(entry.key);
+      }
+    }
+
+    for (final entry in desired.entries) {
+      if (_declarativeRegionParts.containsKey(entry.key)) continue;
+      final id = await c.addPolygonAsync(entry.value);
+      final current = _desiredRegionParts[entry.key];
+      if (!mounted ||
+          generation != _regionSyncGeneration ||
+          current == null ||
+          !_samePolygonOptions(current, entry.value)) {
+        c.removePolygon(id);
+        continue;
+      }
+      _declarativeRegionParts[entry.key] = _DeclarativeRegionPart(
+        id,
+        entry.value,
+      );
+    }
+  }
+
+  bool _samePolygonOptions(PolygonOptions a, PolygonOptions b) {
+    return a.color == b.color &&
+        a.opacity == b.opacity &&
+        a.outlineColor == b.outlineColor &&
+        _sameRing(a.points, b.points) &&
+        _sameHoles(a.holes, b.holes);
+  }
+
+  bool _sameRing(List<LatLng> a, List<LatLng> b) {
+    if (a.length != b.length) return false;
+    for (var index = 0; index < a.length; index++) {
+      if (a[index].latitude != b[index].latitude ||
+          a[index].longitude != b[index].longitude) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _sameHoles(List<List<LatLng>>? a, List<List<LatLng>>? b) {
+    final first = a ?? const <List<LatLng>>[];
+    final second = b ?? const <List<LatLng>>[];
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (!_sameRing(first[index], second[index])) return false;
+    }
+    return true;
+  }
+
   void _onMapCreated(MapLibreMapController native) {
     if (_controller != null) return; // idempotent: ignore re-fires
     setState(() {
@@ -126,11 +217,13 @@ class _GoodMapState extends State<GoodMap> {
 
   void _onOverlayChanged() => setState(() {});
 
-  void _onStyleLoaded() {
+  Future<void> _onStyleLoaded() async {
     if (!_readyCalled) {
       _readyCalled = true;
       _syncMarkers();
       _syncPopups();
+      await _syncRegions();
+      if (!mounted) return;
       widget.onMapReady?.call(_controller!);
     } else {
       // Theme changed mid-session: GL-scene objects (symbols + lines) must be
@@ -158,6 +251,9 @@ class _GoodMapState extends State<GoodMap> {
       }
       if (oldWidget.popups != widget.popups) {
         _syncPopups();
+      }
+      if (oldWidget.regions != widget.regions) {
+        unawaited(_syncRegions());
       }
     }
   }
@@ -209,6 +305,8 @@ class _GoodMapState extends State<GoodMap> {
 
   @override
   void dispose() {
+    _regionSyncGeneration++;
+    _desiredRegionParts = const {};
     _controller?.removeListener(_onOverlayChanged);
     _controller?.dispose();
     _basemapClient.close();
@@ -222,7 +320,7 @@ class _GoodMapState extends State<GoodMap> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        widget.mapBuilder(
+        (widget.mapBuilder ?? _defaultMapBuilder)(
           styleString: style,
           initialCameraPosition: CameraPosition(
             target: widget.initialCenter,

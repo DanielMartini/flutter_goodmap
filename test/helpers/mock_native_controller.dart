@@ -6,7 +6,12 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:goodmap/src/good_map.dart';
 import 'package:mocktail/mocktail.dart';
 
-class MockMapLibreMapController extends Mock implements MapLibreMapController {}
+class MockMapLibreMapController extends Mock implements MapLibreMapController {
+  final ArgumentCallbacks<Circle> _onCircleTapped = ArgumentCallbacks<Circle>();
+
+  @override
+  ArgumentCallbacks<Circle> get onCircleTapped => _onCircleTapped;
+}
 
 /// Builds a fake map: ignores rendering, immediately invokes onMapCreated and
 /// onStyleLoaded with [native], and reports the chosen style string.
@@ -54,6 +59,7 @@ void registerGoodFallbacks() {
   registerFallbackValue(CameraUpdate.zoomIn());
   registerFallbackValue(const SymbolOptions());
   registerFallbackValue(const LatLng(0, 0));
+  registerFallbackValue(<LatLng>[]);
   registerFallbackValue(_FallbackSymbol()); // for removeSymbol(symbol) stubs
   registerFallbackValue(Uint8List(0)); // for addImage(bytes) stubs
   registerFallbackValue(const LineOptions()); // for addLine(options) stubs

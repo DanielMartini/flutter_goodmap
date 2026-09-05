@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
+
+### Declarative regions
+- Added geography-agnostic `GoodMapRegionOptions` and `GoodMapRegionPolygon` models with MultiPolygon and hole support.
+- `GoodMap.regions` now diffs stable region-part IDs, reapplies fills after style reloads, and removes stale asynchronous fills.
+- `GoodMapGlobe` now forces the flat surface while regions are active, frames `focusBounds` once per `focusToken`, and restores the prior surface and camera when regions are cleared.
 
 ### Globe
 - Added configurable `minZoom` support to `GoodGlobe` and `GoodMapGlobe`. The default remains `0.0` for backward compatibility.

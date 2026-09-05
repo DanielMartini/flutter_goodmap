@@ -14,8 +14,8 @@ void main() {
   testWidgets('positions an overlay entry at the projected screen offset',
       (tester) async {
     final native = MockMapLibreMapController();
-    when(() => native.toScreenLocation(any()))
-        .thenAnswer((_) async => const Point<num>(120, 240));
+    when(() => native.toScreenLocationBatch(any()))
+        .thenAnswer((_) async => const [Point<num>(120, 240)]);
 
     final entries = [
       const OverlayEntryData(
@@ -44,8 +44,8 @@ void main() {
 
   testWidgets('invokes onTap when the overlay child is tapped', (tester) async {
     final native = MockMapLibreMapController();
-    when(() => native.toScreenLocation(any()))
-        .thenAnswer((_) async => const Point<num>(50, 50));
+    when(() => native.toScreenLocationBatch(any()))
+        .thenAnswer((_) async => const [Point<num>(50, 50)]);
     var tapped = false;
 
     final entries = [

@@ -55,8 +55,9 @@ void main() {
 
   testWidgets('synchronizes declarative markers and popups dynamically', (tester) async {
     final native = MockMapLibreMapController();
-    when(() => native.toScreenLocation(any()))
-        .thenAnswer((_) async => const Point<num>(100, 100));
+    when(() => native.toScreenLocationBatch(any())).thenAnswer(
+      (_) async => const [Point<num>(100, 100), Point<num>(100, 100)],
+    );
 
     final initialMarkers = [
       const MarkerOptions(

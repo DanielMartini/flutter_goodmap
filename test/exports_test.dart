@@ -14,6 +14,8 @@ void main() {
     expect(MarkerImage, isNotNull);
     expect(MarkerId, isNotNull);
     expect(PopupId, isNotNull);
+    expect(GoodMapRegionOptions, isNotNull);
+    expect(GoodMapRegionPolygon, isNotNull);
     expect(LatLng, isNotNull); // re-exported from maplibre_gl
     expect(LatLngBounds, isNotNull); // re-exported from maplibre_gl
     expect(CameraPosition, isNotNull);

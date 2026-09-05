@@ -200,10 +200,7 @@ class GoodMapController extends ChangeNotifier {
     if (symbol != null) _native.removeSymbol(symbol);
   }
 
-  Future<void> _createNativeMarkerCircle(
-    int id,
-    MarkerOptions options,
-  ) async {
+  Future<void> _createNativeMarkerCircle(int id, MarkerOptions options) async {
     final color = options.color ?? const Color(0xFF4F86F7);
     final circle = await _native.addCircle(
       maplibre.CircleOptions(
@@ -450,6 +447,16 @@ class GoodMapController extends ChangeNotifier {
     return PolygonId(id);
   }
 
+  /// Adds a polygon and completes after its native fill has been created.
+  ///
+  /// Declarative synchronization uses this variant so a selection change can
+  /// discard a fill that finishes after it is no longer requested.
+  Future<PolygonId> addPolygonAsync(PolygonOptions options) async {
+    final int id = _polygons.add(options);
+    await _createFill(id, options);
+    return PolygonId(id);
+  }
+
   /// Removes a polygon. Unknown [id] is a no-op.
   void removePolygon(PolygonId id) {
     if (!_polygons.items.containsKey(id.value)) return;
@@ -478,6 +485,10 @@ class GoodMapController extends ChangeNotifier {
         fillOutlineColor: options.outlineColor?.toHexStringRGB(),
       ),
     );
+    if (!_polygons.items.containsKey(id)) {
+      await _native.removeFill(fill);
+      return;
+    }
     _fills[id] = fill;
   }
 

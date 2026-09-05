@@ -2,11 +2,12 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:maplibre_gl/maplibre_gl.dart' show LatLng;
+import 'package:maplibre_gl/maplibre_gl.dart' show LatLng, LatLngBounds;
 
 import '../good_map.dart';
 import '../good_map_controller.dart' show GoodMapController;
 import '../heatmap/heatmap.dart';
+import '../lines/region.dart';
 import '../markers/marker.dart';
 import '../popups/popup.dart';
 import '../theme/carto_basemap_config.dart';
@@ -35,6 +36,10 @@ class GoodMapGlobe extends StatefulWidget {
     this.cameraResetCurve = Curves.easeInOut,
     this.cameraResetDuration = const Duration(milliseconds: 350),
     this.markers = const [],
+    this.regions = const [],
+    this.focusBounds,
+    this.focusToken,
+    this.focusPadding = const EdgeInsets.all(40),
     @Deprecated('Use markers instead') this.points = const [],
     this.popups = const [],
     this.arcs = const [],
@@ -60,6 +65,7 @@ class GoodMapGlobe extends StatefulWidget {
     this.waterColor,
     this.basemapConfig,
     this.onBasemapError,
+    @visibleForTesting this.mapBuilder,
     super.key,
   }) : assert(minZoom >= 0.0 && minZoom <= 6.0),
        assert(atmosphereGlowIntensity >= 0.0 && atmosphereGlowIntensity <= 2.0);
@@ -88,6 +94,17 @@ class GoodMapGlobe extends StatefulWidget {
 
   /// Custom markers (widgets, assets, or fallback dots) plotted on the map and globe.
   final List<MarkerOptions> markers;
+
+  /// Generic polygon regions rendered on the flat surface.
+  final List<GoodMapRegionOptions> regions;
+
+  /// Bounds framed after the flat surface and region fills are ready.
+  final LatLngBounds? focusBounds;
+
+  /// A changed token requests one new [focusBounds] fit.
+  final Object? focusToken;
+
+  final EdgeInsets focusPadding;
 
   /// Labelled points plotted on the globe.
   @Deprecated('Use markers instead')
@@ -174,6 +191,9 @@ class GoodMapGlobe extends StatefulWidget {
   final GoodBasemapConfig? basemapConfig;
   final void Function(Object error)? onBasemapError;
 
+  @visibleForTesting
+  final GoodMapBuilder? mapBuilder;
+
   @override
   State<GoodMapGlobe> createState() => _GoodMapGlobeState();
 }
@@ -211,6 +231,27 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
   double _flatReturnZoom = 0;
   double _shortSide = 0;
   Completer<void>? _flatReady;
+  GoodMapController? _flatController;
+
+  bool? _regionRestoreFlat;
+  LatLng? _regionRestoreCenter;
+  double? _regionRestoreGlobeZoom;
+  double? _regionRestoreFlatZoom;
+  int _regionModeGeneration = 0;
+  Object? _lastFocusToken;
+  bool _hasFocusedRegion = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.regions.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.regions.isNotEmpty) {
+          unawaited(_enterRegionMode());
+        }
+      });
+    }
+  }
 
   @override
   void didUpdateWidget(GoodMapGlobe oldWidget) {
@@ -229,9 +270,115 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
       _globeCameraResetting = true;
       _globeCameraSnap = false;
       _globeCameraToken++;
-      _flat = false;
-      widget.onSurfaceChanged?.call(false);
+      _flat = widget.regions.isNotEmpty;
+      widget.onSurfaceChanged?.call(_flat);
     }
+
+    final hadRegions = oldWidget.regions.isNotEmpty;
+    final hasRegions = widget.regions.isNotEmpty;
+    if (!hadRegions && hasRegions) {
+      unawaited(_enterRegionMode());
+    } else if (hadRegions && !hasRegions) {
+      unawaited(_exitRegionMode());
+    } else if (hasRegions &&
+        (oldWidget.focusToken != widget.focusToken ||
+            oldWidget.focusBounds != widget.focusBounds)) {
+      unawaited(_focusRegion());
+    }
+  }
+
+  Future<void> _enterRegionMode() async {
+    final generation = ++_regionModeGeneration;
+    _regionRestoreFlat ??= _flat;
+    _regionRestoreCenter ??= _center;
+    _regionRestoreGlobeZoom ??= _globeZoom;
+    _regionRestoreFlatZoom ??= _flatZoom;
+    _hasFocusedRegion = false;
+    _lastFocusToken = null;
+
+    while (mounted && _surfaceTransitionInProgress) {
+      await WidgetsBinding.instance.endOfFrame;
+    }
+    if (!mounted ||
+        generation != _regionModeGeneration ||
+        widget.regions.isEmpty) {
+      return;
+    }
+    if (!_flat) await _setFlat(true);
+    if (!mounted ||
+        generation != _regionModeGeneration ||
+        widget.regions.isEmpty) {
+      return;
+    }
+    await _focusRegion();
+  }
+
+  Future<void> _exitRegionMode() async {
+    final generation = ++_regionModeGeneration;
+    _hasFocusedRegion = false;
+    _lastFocusToken = null;
+
+    // Let the mounted GoodMap receive the empty region list and synchronously
+    // remove its fills before restoring the previous surface and camera.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted ||
+        generation != _regionModeGeneration ||
+        widget.regions.isNotEmpty) {
+      return;
+    }
+
+    final restoreFlat = _regionRestoreFlat ?? false;
+    final restoreCenter = _regionRestoreCenter ?? widget.initialCenter;
+    final restoreGlobeZoom = _regionRestoreGlobeZoom ?? widget.initialZoom;
+    final restoreFlatZoom = _regionRestoreFlatZoom ?? _flatZoom;
+
+    if (restoreFlat) {
+      _center = restoreCenter;
+      _flatZoom = restoreFlatZoom;
+      _flatEntryZoom = restoreFlatZoom;
+      if (!_flat) {
+        setState(() => _flat = true);
+        widget.onSurfaceChanged?.call(true);
+      }
+      await _flatController?.moveTo(restoreCenter, zoom: restoreFlatZoom);
+    } else {
+      _surfaceTransition.stop();
+      _surfaceTransition.value = 0;
+      final surfaceChanged = _flat;
+      setState(() {
+        _surfaceTransitionInProgress = false;
+        _center = restoreCenter;
+        _globeStartZoom = restoreGlobeZoom;
+        _globeZoom = restoreGlobeZoom;
+        _globeCameraResetting = true;
+        _globeCameraSnap = true;
+        _globeCameraToken++;
+        _flatReady = null;
+        _flatController = null;
+        _flat = false;
+      });
+      if (surfaceChanged) widget.onSurfaceChanged?.call(false);
+    }
+
+    _regionRestoreFlat = null;
+    _regionRestoreCenter = null;
+    _regionRestoreGlobeZoom = null;
+    _regionRestoreFlatZoom = null;
+  }
+
+  Future<void> _focusRegion() async {
+    final controller = _flatController;
+    final bounds = widget.focusBounds;
+    if (!_flat ||
+        widget.regions.isEmpty ||
+        controller == null ||
+        bounds == null) {
+      return;
+    }
+    if (_hasFocusedRegion && _lastFocusToken == widget.focusToken) return;
+    _hasFocusedRegion = true;
+    _lastFocusToken = widget.focusToken;
+    await controller.fitBounds(bounds, padding: widget.focusPadding);
   }
 
   // --- Zoom continuity ------------------------------------------------------
@@ -344,8 +491,10 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
   }
 
   void _onFlatMapReady(GoodMapController controller) {
+    _flatController = controller;
     final ready = _flatReady;
     if (ready != null && !ready.isCompleted) ready.complete();
+    unawaited(_focusRegion());
   }
 
   @override
@@ -437,15 +586,19 @@ class _GoodMapGlobeState extends State<GoodMapGlobe>
                             controls: widget.controls,
                             markers: widget.markers,
                             popups: widget.popups,
+                            regions: widget.regions,
                             locale: widget.locale,
-                            waterColor: waterColor,
+                            waterColor:
+                                widget.mapBuilder == null ? waterColor : null,
                             basemapConfig: widget.basemapConfig,
                             onBasemapError: widget.onBasemapError,
+                            mapBuilder: widget.mapBuilder,
                             onMapReady: _onFlatMapReady,
                             onCameraChanged: (pos) {
                               _center = pos.target;
                               _flatZoom = pos.zoom;
-                              if (pos.zoom < _flatReturnZoom) {
+                              if (widget.regions.isEmpty &&
+                                  pos.zoom < _flatReturnZoom) {
                                 _setFlat(false);
                               }
                             },
